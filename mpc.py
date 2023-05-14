@@ -6,6 +6,8 @@ import copy
 import matplotlib.pyplot as plt
 from cubic_spline_planner import CubicSpline2D
 
+MAX_ITERATION = 20
+
 class MPC:
     def __init__(self, T, N):
         self.v_max = 0.6
@@ -14,7 +16,7 @@ class MPC:
         self.N = N
     
     def shift_movement(self, cur_state, cur_control):
-        f_value = self.f(cur_state, cur_control)
+        f_value = self.f_np(cur_state, cur_control)
         cur_state = cur_state + self.T*f_value
         return cur_state
     
@@ -43,13 +45,13 @@ class MPC:
             x_next = self.opt_states[i, :] + self.f(self.opt_states[i, :], self.opt_controls[i, :]).T*T
             self.opti.subject_to(self.opt_states[i+1, :]==x_next)
 
-        Q = np.array([[5.0, 0.0, 0.0],[0.0, 5.0, 0.0],[0.0, 0.0, .1]])
+        Q = np.array([[20.0, 0.0, 0.0],[0.0, 20.0, 0.0],[0.0, 0.0, .1]])
         R = np.array([[0.5, 0.0], [0.05, 0.00]])
 
         obj = 0
         for i in range(N):
 
-            obj = obj + ca.mtimes([(self.opt_states[i, :]-self.opt_x_ref[i, :]), Q, (self.opt_states[i, :]-self.opt_x_ref[i, :]).T]) \
+            obj = obj + ca.mtimes([(self.opt_states[i+1, :]-self.opt_x_ref[i+1, :]), Q, (self.opt_states[i+1, :]-self.opt_x_ref[i+1, :]).T]) \
                 + ca.mtimes([self.opt_controls[i, :], R, self.opt_controls[i, :].T])
         
         # optimization objective
@@ -63,33 +65,37 @@ class MPC:
         opts_setting = {'ipopt.max_iter':200, 'ipopt.print_level':0, 'print_time':0, 'ipopt.acceptable_tol':1e-8, 'ipopt.acceptable_obj_change_tol':1e-6}
 
         self.opti.solver('ipopt', opts_setting)
-
+    
     def mpc(self, cur_state, cur_control, final_state, ref_state):
         self.nonlinear_solver_generate(T = self.T, N = self.N)
         self.opti.set_value(self.opt_x_ref, ref_state[0: self.N+1])
-        print(ref_state.shape)
         pred_state = np.zeros((self.N+1, 3))
-        pred_cur = np.zeros((self.N, 2))
-        pred_cur[0] = cur_control
+        pred_control = np.zeros((self.N, 2))
+        pred_control[0] = cur_control
         tot_control = []
         mpciter = 0
-        while(np.linalg.norm(cur_state - final_state) > 1e-2 and mpciter < 1  ):
+        while(np.linalg.norm(cur_state[0:1] - final_state[0:1]) > 1e-2 and mpciter < 1  ):
             
             self.opti.set_value(self.opt_x0, cur_state)
-            self.opti.set_initial(self.opt_controls, pred_cur) # (N, 2)
+            self.opti.set_initial(self.opt_controls, pred_control) # (N, 2)
             self.opti.set_initial(self.opt_states, pred_state) # (N+1, 3)
             sol = self.opti.solve()
 
             pred_control = sol.value(self.opt_controls)
             tot_control.append(pred_control[0, :])
             pred_state = sol.value(self.opt_states)
-            f_value = self.f_np(cur_state, pred_control[0])
-            cur_state = cur_state + self.T*f_value
+            # f_value = self.f_np(cur_state, pred_control[0])
+            # cur_state = cur_state + self.T*f_value
             # update variable
             pred_state = np.concatenate((pred_state[1:], pred_state[-1:]))
             pred_control = np.concatenate((pred_control[1:], pred_control[-1:]))
             mpciter = mpciter + 1
-        self.visualization(ref_path=ref_state, actual_path=pred_state)
+        for i in range(5):
+            f_value = self.f_np(cur_state, pred_control[i])
+            cur_state = cur_state + self.T*f_value
+            # cur_state = self.shift_movement(cur_state=cur_state, cur_control=pred_control[i])
+        # print(pred_state)
+        # self.visualization(ref_path=ref_state, actual_path=pred_state)
         return cur_state
 
     def path_generate(self, ref_path):
@@ -112,26 +118,50 @@ class MPC:
             ref_path.append([rx[-1], ry[-1], ryaw[-1]])
         return np.array(ref_path)
     
-    def visualization(self, ref_path, actual_path):
-        plt.plot(ref_path[:, 0], ref_path[:, 1], "-r", label="ref")
-        plt.plot(actual_path[:, 0], actual_path[:, 1], "-b", label="mpc")
-        plt.legend(loc="lower right")
-        plt.savefig('visualization.png')
-        plt.show()
+    def visualization(self, ref_path, actual_path, whether_gif = 0):
+        if whether_gif == 0:
+            plt.plot(ref_path[:, 0], ref_path[:, 1], "-r", label="ref")
+            plt.plot(actual_path[:, 0], actual_path[:, 1], "-b", label="mpc")
+            plt.legend(loc="lower right")
+            # plt.savefig('visualization.png')
+            plt.show()
+        else:
+            import matplotlib.animation as animation
+            fig = plt.figure()
+            plt.plot(ref_path[:, 0], ref_path[:, 1], "-r", label="ref")
+            ims = []
+            print(len(actual_path))
+            for i in range(0, len(actual_path)):
+                im = plt.plot(actual_path[0:i, 0], actual_path[0:i, 1], "xb", label="mpc")
+                ims.append(im)
+            # plt.legend(loc="lower right")
+            ani = animation.ArtistAnimation(fig, ims, interval=20, repeat_delay=1)
+            ani.save("test.gif",writer='pillow')
+            plt.show()
+
 
 if __name__ == '__main__':
-    controller = MPC(T = 0.1, N = 50)
+    controller = MPC(T = 0.05, N = 50)
     cur_state = np.array([-1., -1., 0.])
     cur_control = np.array([0., 0.])
-    final_state = np.array([0.3, 0.3, 0.])
-    ref_path = np.array([[-1., -1.],
-                         [0., -0.5],
-                         [0., 0.],
-                         [0.5, 0.]])
-    ref_path = controller.path_generate(ref_path=ref_path)
-    print(ref_path)
-    print(ref_path.shape)
+    final_state = np.array([0.5, 0., 0.])
+    ref_path = np.array([[-1., -1., 0.],
+                         [0., -0.5, 0.],
+                         [0., 0., 0.],
+                         [0.5, 0., 0.]])
     next_state = copy.deepcopy(cur_state)
-    next_state = controller.mpc(cur_state=next_state, cur_control=cur_control, final_state=final_state, ref_state=ref_path)
+    ref_path = controller.path_generate(ref_path=ref_path)
+    ref_path_tot = copy.deepcopy(ref_path)
+    actual_path_tot = [cur_state]
+    print(next_state[0:2])
+    while(np.linalg.norm(next_state[0:2] - final_state[0:2]) > 2e-2):
+        # one iteration
+        ref_path = np.concatenate((ref_path[1:], ref_path[-1:]))
+        ref_path[0] = next_state
+        print(next_state, np.linalg.norm(next_state[0:2] - final_state[0:2]))
+        next_state = controller.mpc(cur_state=next_state, cur_control=cur_control, final_state=final_state, ref_state=ref_path)
+        actual_path_tot.append(next_state)
+    actual_path_tot = np.array(actual_path_tot)
+    controller.visualization(ref_path=ref_path_tot, actual_path=actual_path_tot, whether_gif=1)
 
     

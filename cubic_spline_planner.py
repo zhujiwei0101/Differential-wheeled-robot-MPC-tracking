@@ -347,7 +347,6 @@ def main_2d():  # pragma: no cover
     ds = 0.1  # [m] distance of each interpolated points
 
     sp = CubicSpline2D(x, y)
-    print(1)
     s = np.arange(0, sp.s[-1], ds)
 
     rx, ry, ryaw, rk = [], [], [], []
