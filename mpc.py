@@ -90,13 +90,15 @@ class MPC:
             pred_state = np.concatenate((pred_state[1:], pred_state[-1:]))
             pred_control = np.concatenate((pred_control[1:], pred_control[-1:]))
             mpciter = mpciter + 1
+        state_one_iteration = [cur_state]
         for i in range(5):
             f_value = self.f_np(cur_state, pred_control[i])
             cur_state = cur_state + self.T*f_value
+            state_one_iteration.append(cur_state)
             # cur_state = self.shift_movement(cur_state=cur_state, cur_control=pred_control[i])
         # print(pred_state)
         # self.visualization(ref_path=ref_state, actual_path=pred_state)
-        return cur_state
+        return state_one_iteration
 
     def path_generate(self, ref_path):
         x = ref_path[:, 0]
@@ -132,10 +134,10 @@ class MPC:
             ims = []
             print(len(actual_path))
             for i in range(0, len(actual_path)):
-                im = plt.plot(actual_path[0:i, 0], actual_path[0:i, 1], "xb", label="mpc")
+                im = plt.plot(actual_path[0:i,0], actual_path[0:i,1], "-b", label="mpc")
                 ims.append(im)
             # plt.legend(loc="lower right")
-            ani = animation.ArtistAnimation(fig, ims, interval=20, repeat_delay=1)
+            ani = animation.ArtistAnimation(fig, ims, interval=5, repeat_delay=1)
             ani.save("test.gif",writer='pillow')
             plt.show()
 
@@ -153,14 +155,16 @@ if __name__ == '__main__':
     ref_path = controller.path_generate(ref_path=ref_path)
     ref_path_tot = copy.deepcopy(ref_path)
     actual_path_tot = [cur_state]
-    print(next_state[0:2])
-    while(np.linalg.norm(next_state[0:2] - final_state[0:2]) > 2e-2):
+    cnt = 0
+    while(np.linalg.norm(next_state[0:2] - final_state[0:2]) > 3e-2 and cnt <= 1000):
         # one iteration
         ref_path = np.concatenate((ref_path[1:], ref_path[-1:]))
         ref_path[0] = next_state
         print(next_state, np.linalg.norm(next_state[0:2] - final_state[0:2]))
-        next_state = controller.mpc(cur_state=next_state, cur_control=cur_control, final_state=final_state, ref_state=ref_path)
-        actual_path_tot.append(next_state)
+        state_one_iteration = controller.mpc(cur_state=next_state, cur_control=cur_control, final_state=final_state, ref_state=ref_path)
+        next_state = state_one_iteration[-1]
+        actual_path_tot += state_one_iteration
+        cnt += 1
     actual_path_tot = np.array(actual_path_tot)
     controller.visualization(ref_path=ref_path_tot, actual_path=actual_path_tot, whether_gif=1)
 
