@@ -10,8 +10,8 @@ MAX_ITERATION = 20
 
 class MPC:
     def __init__(self, T, N):
-        self.v_max = 0.6
-        self.omega_max = np.pi/4.0
+        self.v_max = 0.5
+        self.omega_max = np.pi/2.0
         self.T = T
         self.N = N
     
@@ -90,8 +90,8 @@ class MPC:
             pred_state = np.concatenate((pred_state[1:], pred_state[-1:]))
             pred_control = np.concatenate((pred_control[1:], pred_control[-1:]))
             mpciter = mpciter + 1
-        state_one_iteration = [cur_state]
-        for i in range(5):
+        state_one_iteration = []
+        for i in range(1):
             f_value = self.f_np(cur_state, pred_control[i])
             cur_state = cur_state + self.T*f_value
             state_one_iteration.append(cur_state)
@@ -134,10 +134,10 @@ class MPC:
             ims = []
             print(len(actual_path))
             for i in range(0, len(actual_path)):
-                im = plt.plot(actual_path[0:i,0], actual_path[0:i,1], "-b", label="mpc")
+                im = plt.plot(actual_path[0:i,0], actual_path[0:i,1], "ob", label="mpc")
                 ims.append(im)
             # plt.legend(loc="lower right")
-            ani = animation.ArtistAnimation(fig, ims, interval=5, repeat_delay=1)
+            ani = animation.ArtistAnimation(fig, ims, interval=10, repeat_delay=1)
             ani.save("test.gif",writer='pillow')
             plt.show()
 
@@ -165,7 +165,9 @@ if __name__ == '__main__':
         next_state = state_one_iteration[-1]
         actual_path_tot += state_one_iteration
         cnt += 1
+    # print(actual_path_tot)
     actual_path_tot = np.array(actual_path_tot)
+    
     controller.visualization(ref_path=ref_path_tot, actual_path=actual_path_tot, whether_gif=1)
 
     
