@@ -49,9 +49,8 @@ def get_scenario_waypoints(name: str) -> np.ndarray:
                 [0.9, 0.6, 0.0],
             ]
         ),
-        # A closed circle cannot be tracked as one segment with the current
-        # point-goal termination rule, because start and goal coincide.
-        # Use circle_upper + circle_lower internally and combine them as "circle".
+        # A closed circle cannot be tracked as one segment with a point-goal
+        # termination rule, because start and goal coincide. Use two half-circles.
         "circle_upper": np.array(
             [
                 [0.6, 0.0, 0.0],
@@ -102,6 +101,40 @@ def generate_reference_path(waypoints: np.ndarray, horizon: int, ds: float = 0.0
     return np.asarray(reference_path)
 
 
+def get_reference_window(
+    reference_path: np.ndarray,
+    current_state: np.ndarray,
+    horizon: int,
+    progress_index: int,
+    search_back: int = 5,
+) -> tuple[np.ndarray, int]:
+    """Find a progress-based local reference window.
+
+    The previous demo advanced the reference by exactly one path point per control
+    step. On high-curvature paths this can make the reference window run ahead of
+    the robot, so the optimizer may cut across the curve. This function instead
+    anchors the window around the nearest forward reference point and prevents the
+    progress index from moving backward.
+    """
+    search_start = max(progress_index - search_back, 0)
+    search_path = reference_path[search_start:, :2]
+    distances = np.linalg.norm(search_path - current_state[:2], axis=1)
+    nearest_index = search_start + int(np.argmin(distances))
+    progress_index = max(progress_index, nearest_index)
+
+    end_index = progress_index + horizon + 1
+    window = reference_path[progress_index:end_index]
+    if len(window) < horizon + 1:
+        padding = np.repeat(reference_path[-1][None, :], horizon + 1 - len(window), axis=0)
+        window = np.vstack([window, padding])
+
+    # Force the first predicted state to be consistent with the measured state,
+    # while keeping the remaining horizon tied to path progress.
+    window = window.copy()
+    window[0] = current_state
+    return window, progress_index
+
+
 def simulate_tracking_segment(
     scenario_name: str,
     config: MPCConfig,
@@ -114,28 +147,32 @@ def simulate_tracking_segment(
 
     current_state = reference_path[0].copy() if start_state is None else start_state.copy()
     goal_state = reference_path[-1].copy()
-    moving_reference = copy.deepcopy(reference_path)
-    moving_reference[0] = current_state
-
+    progress_index = 0
     actual_path = [current_state.copy()]
     controls = []
     predicted_paths = []
     errors = [np.linalg.norm(current_state[:2] - goal_state[:2])]
 
     for _ in range(max_steps):
-        if np.linalg.norm(current_state[:2] - goal_state[:2]) <= 3e-2:
+        near_path_end = progress_index >= len(reference_path) - config.horizon - 2
+        close_to_goal = np.linalg.norm(current_state[:2] - goal_state[:2]) <= 3e-2
+        if near_path_end and close_to_goal:
             break
 
-        moving_reference = np.concatenate((moving_reference[1:], moving_reference[-1:]))
-        moving_reference[0] = current_state
+        reference_window, progress_index = get_reference_window(
+            reference_path,
+            current_state,
+            config.horizon,
+            progress_index,
+        )
 
-        control, current_state, predicted_states = controller.solve_step(current_state, moving_reference)
+        control, current_state, predicted_states = controller.solve_step(current_state, reference_window)
         controls.append(control)
         predicted_paths.append(predicted_states)
         actual_path.append(current_state.copy())
         current_error = np.linalg.norm(current_state[:2] - goal_state[:2])
         errors.append(current_error)
-        print(f"[{scenario_name}]", current_state, current_error)
+        print(f"[{scenario_name}]", current_state, current_error, f"progress={progress_index}")
 
     actual_path = np.asarray(actual_path)
     controls = np.asarray(controls)
