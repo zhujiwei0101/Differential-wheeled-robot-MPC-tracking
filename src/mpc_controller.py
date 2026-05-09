@@ -19,8 +19,8 @@ class MPCConfig:
     r: np.ndarray = field(default_factory=lambda: np.diag([0.5, 0.05]))
     obstacles: Tuple[Tuple[float, float, float], ...] = ()
     obstacle_safety_margin: float = 0.12
-    obstacle_slack_weight: float = 1.0e5
-    obstacle_repulsion_weight: float = 0.05
+    obstacle_slack_weight: float = 1.0e4
+    obstacle_repulsion_weight: float = 0.0
 
 
 class MPCController:
@@ -37,7 +37,10 @@ class MPCController:
         self._control_guess = np.zeros((self.config.horizon, 2))
         self._obstacle_slack_guess = None
         if self.config.obstacles:
-            self._obstacle_slack_guess = np.zeros((self.config.horizon, len(self.config.obstacles)))
+            self._obstacle_slack_guess = np.full(
+                (self.config.horizon, len(self.config.obstacles)),
+                (self.config.obstacle_safety_margin + 0.2) ** 2,
+            )
 
     @staticmethod
     def dynamics_np(state: np.ndarray, control: np.ndarray) -> np.ndarray:
@@ -105,16 +108,18 @@ class MPCController:
                     # while the large penalty still strongly discourages safety violation.
                     opti.subject_to(distance_sq + slack >= safe_radius**2)
                     objective += cfg.obstacle_slack_weight * slack**2
-                    objective += cfg.obstacle_repulsion_weight / (distance_sq + 1.0e-4)
+                    if cfg.obstacle_repulsion_weight > 0.0:
+                        objective += cfg.obstacle_repulsion_weight / (distance_sq + 1.0e-3)
 
         opti.minimize(objective)
 
         solver_options = {
-            "ipopt.max_iter": 300,
+            "ipopt.max_iter": 800,
             "ipopt.print_level": 0,
             "print_time": 0,
-            "ipopt.acceptable_tol": 1e-7,
-            "ipopt.acceptable_obj_change_tol": 1e-6,
+            "ipopt.acceptable_tol": 1e-6,
+            "ipopt.acceptable_obj_change_tol": 1e-5,
+            "ipopt.mu_strategy": "adaptive",
         }
         opti.solver("ipopt", solver_options)
 
@@ -144,7 +149,9 @@ class MPCController:
         self.opti.set_value(self.x0, current_state)
         self.opti.set_value(self.x_ref, reference_window[: cfg.horizon + 1])
         self.opti.set_initial(self.controls, self._control_guess)
-        self.opti.set_initial(self.states, self._state_guess)
+        # A reference-window state warm start is much more reliable for obstacle
+        # scenes than an all-zero state guess.
+        self.opti.set_initial(self.states, reference_window[: cfg.horizon + 1])
         if self.obstacle_slacks is not None and self._obstacle_slack_guess is not None:
             self.opti.set_initial(self.obstacle_slacks, self._obstacle_slack_guess)
 
