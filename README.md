@@ -1,4 +1,7 @@
 # Differential-wheeled-robot-MPC-tracking
+## Visualization
+### NMPC
+![figure 1](./test.gif)
 ## Preliminaries
 ### Kinematics Model
 The kinematics model of WMR is 
