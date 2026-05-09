@@ -7,5 +7,5 @@ __pycache__/
 .DS_Store
 
 # Generated visualization outputs
-assets/images/*.gif
+# assets/images/*.gif
 !assets/images/.gitkeep
