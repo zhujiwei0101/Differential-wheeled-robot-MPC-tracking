@@ -1,4 +1,5 @@
 import csv
+import math
 import os
 from typing import Sequence
 
@@ -54,6 +55,13 @@ def robot_wheel_segments(state: np.ndarray, length: float = 0.22, width: float =
     return _transform_points(left_wheel, state), _transform_points(right_wheel, state)
 
 
+def _set_robot_artists(body_patch: Polygon, left_wheel, right_wheel, state: np.ndarray) -> None:
+    body_patch.set_xy(robot_body_points(state))
+    left_segment, right_segment = robot_wheel_segments(state)
+    left_wheel.set_data(left_segment[:, 0], left_segment[:, 1])
+    right_wheel.set_data(right_segment[:, 0], right_segment[:, 1])
+
+
 def plot_tracking_result(reference_path: np.ndarray, actual_path: np.ndarray) -> None:
     plt.plot(reference_path[:, 0], reference_path[:, 1], "-r", label="reference")
     plt.plot(actual_path[:, 0], actual_path[:, 1], "-b", label="actual")
@@ -65,11 +73,75 @@ def plot_tracking_result(reference_path: np.ndarray, actual_path: np.ndarray) ->
     plt.show()
 
 
-def _set_robot_artists(body_patch: Polygon, left_wheel, right_wheel, state: np.ndarray) -> None:
-    body_patch.set_xy(robot_body_points(state))
-    left_segment, right_segment = robot_wheel_segments(state)
-    left_wheel.set_data(left_segment[:, 0], left_segment[:, 1])
-    right_wheel.set_data(right_segment[:, 0], right_segment[:, 1])
+def _configure_axis(ax, reference_path: np.ndarray, actual_path: np.ndarray, title: str | None = None) -> None:
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True)
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    if title:
+        ax.set_title(title)
+
+    margin = 0.25
+    all_xy = np.vstack([reference_path[:, :2], actual_path[:, :2]])
+    ax.set_xlim(all_xy[:, 0].min() - margin, all_xy[:, 0].max() + margin)
+    ax.set_ylim(all_xy[:, 1].min() - margin, all_xy[:, 1].max() + margin)
+
+
+def _create_tracking_artists(ax, reference_path: np.ndarray, actual_path: np.ndarray):
+    ax.plot(reference_path[:, 0], reference_path[:, 1], "-r", label="reference")
+    ax.plot(reference_path[0, 0], reference_path[0, 1], "go", markersize=6, label="start")
+    ax.plot(reference_path[-1, 0], reference_path[-1, 1], "r*", markersize=9, label="goal")
+    actual_line, = ax.plot([], [], "-b", label="actual")
+    actual_points, = ax.plot([], [], "ob", markersize=2.5)
+    predicted_line, = ax.plot([], [], "--g", linewidth=1.2, label="MPC prediction")
+    heading_arrow = ax.quiver([], [], [], [], angles="xy", scale_units="xy", scale=1.0, color="k")
+    body_patch = Polygon(robot_body_points(actual_path[0]), closed=True, fill=False, linewidth=1.5)
+    left_wheel, = ax.plot([], [], "k", linewidth=1.8)
+    right_wheel, = ax.plot([], [], "k", linewidth=1.8)
+    ax.add_patch(body_patch)
+    info_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top", fontsize=8)
+    return {
+        "actual_line": actual_line,
+        "actual_points": actual_points,
+        "predicted_line": predicted_line,
+        "heading_arrow": heading_arrow,
+        "body_patch": body_patch,
+        "left_wheel": left_wheel,
+        "right_wheel": right_wheel,
+        "info_text": info_text,
+    }
+
+
+def _update_tracking_artists(artists: dict, result: dict, frame_idx: int):
+    actual_path = result["actual_path"]
+    predicted_paths = result.get("predicted_paths_for_gif")
+    controls = result.get("controls")
+    errors = result.get("errors")
+
+    frame_idx = min(frame_idx, len(actual_path) - 1)
+    artists["actual_line"].set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
+    artists["actual_points"].set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
+
+    if predicted_paths is not None and frame_idx < len(predicted_paths):
+        pred = predicted_paths[frame_idx]
+        artists["predicted_line"].set_data(pred[:, 0], pred[:, 1])
+    else:
+        artists["predicted_line"].set_data([], [])
+
+    state = actual_path[frame_idx]
+    artists["heading_arrow"].set_offsets([[state[0], state[1]]])
+    artists["heading_arrow"].set_UVC([0.12 * np.cos(state[2])], [0.12 * np.sin(state[2])])
+    _set_robot_artists(artists["body_patch"], artists["left_wheel"], artists["right_wheel"], state)
+
+    text_lines = [f"step: {frame_idx}"]
+    if errors is not None and frame_idx < len(errors):
+        text_lines.append(f"error: {errors[frame_idx]:.3f} m")
+    if controls is not None and frame_idx > 0 and frame_idx - 1 < len(controls):
+        v, omega = controls[frame_idx - 1]
+        text_lines.append(f"v: {v:.2f} m/s")
+        text_lines.append(f"w: {omega:.2f} rad/s")
+    artists["info_text"].set_text("\n".join(text_lines))
+    return tuple(artists.values())
 
 
 def save_tracking_gif(
@@ -81,63 +153,23 @@ def save_tracking_gif(
     errors: np.ndarray | None = None,
     robot_arrow_length: float = 0.12,
 ) -> None:
-    """Save an enhanced NMPC tracking animation."""
+    """Save an enhanced single-scenario NMPC tracking animation."""
     import matplotlib.animation as animation
 
     ensure_parent_dir(output_path)
-
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(reference_path[:, 0], reference_path[:, 1], "-r", label="reference")
-    ax.plot(reference_path[0, 0], reference_path[0, 1], "go", markersize=7, label="start")
-    ax.plot(reference_path[-1, 0], reference_path[-1, 1], "r*", markersize=10, label="goal")
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True)
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-
-    margin = 0.25
-    all_xy = np.vstack([reference_path[:, :2], actual_path[:, :2]])
-    ax.set_xlim(all_xy[:, 0].min() - margin, all_xy[:, 0].max() + margin)
-    ax.set_ylim(all_xy[:, 1].min() - margin, all_xy[:, 1].max() + margin)
-
-    actual_line, = ax.plot([], [], "-b", label="actual")
-    actual_points, = ax.plot([], [], "ob", markersize=3)
-    predicted_line, = ax.plot([], [], "--g", linewidth=1.5, label="MPC prediction")
-    heading_arrow = ax.quiver([], [], [], [], angles="xy", scale_units="xy", scale=1.0, color="k")
-    body_patch = Polygon(robot_body_points(actual_path[0]), closed=True, fill=False, linewidth=1.8)
-    left_wheel, = ax.plot([], [], "k", linewidth=2.0)
-    right_wheel, = ax.plot([], [], "k", linewidth=2.0)
-    ax.add_patch(body_patch)
-    info_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top")
+    _configure_axis(ax, reference_path, actual_path)
+    result = {
+        "actual_path": actual_path,
+        "predicted_paths_for_gif": predicted_paths,
+        "controls": controls,
+        "errors": errors,
+    }
+    artists = _create_tracking_artists(ax, reference_path, actual_path)
     ax.legend(loc="lower right")
 
     def update(frame_idx: int):
-        actual_line.set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
-        actual_points.set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
-
-        if predicted_paths is not None and frame_idx < len(predicted_paths):
-            pred = predicted_paths[frame_idx]
-            predicted_line.set_data(pred[:, 0], pred[:, 1])
-        else:
-            predicted_line.set_data([], [])
-
-        state = actual_path[frame_idx]
-        dx = robot_arrow_length * np.cos(state[2])
-        dy = robot_arrow_length * np.sin(state[2])
-        heading_arrow.set_offsets([[state[0], state[1]]])
-        heading_arrow.set_UVC([dx], [dy])
-        _set_robot_artists(body_patch, left_wheel, right_wheel, state)
-
-        text_lines = [f"step: {frame_idx}"]
-        if errors is not None and frame_idx < len(errors):
-            text_lines.append(f"position error: {errors[frame_idx]:.4f} m")
-        if controls is not None and frame_idx > 0 and frame_idx - 1 < len(controls):
-            v, omega = controls[frame_idx - 1]
-            text_lines.append(f"v: {v:.3f} m/s")
-            text_lines.append(f"omega: {omega:.3f} rad/s")
-        info_text.set_text("\n".join(text_lines))
-
-        return actual_line, actual_points, predicted_line, heading_arrow, body_patch, left_wheel, right_wheel, info_text
+        return _update_tracking_artists(artists, result, frame_idx)
 
     ani = animation.FuncAnimation(
         fig,
@@ -152,106 +184,45 @@ def save_tracking_gif(
 
 
 def save_multi_scenario_gif(scenario_results: Sequence[dict], output_path: str) -> None:
-    """Save one GIF that plays multiple tracking scenarios sequentially."""
+    """Save one GIF showing multiple scenarios at the same time."""
     import matplotlib.animation as animation
 
     ensure_parent_dir(output_path)
     if not scenario_results:
         raise ValueError("scenario_results must not be empty")
 
-    fig, ax = plt.subplots(figsize=(7, 5))
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True)
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
+    n_scenarios = len(scenario_results)
+    n_cols = min(3, n_scenarios)
+    n_rows = math.ceil(n_scenarios / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5.2 * n_cols, 4.2 * n_rows), squeeze=False)
+    axes_flat = axes.ravel()
 
-    all_xy = []
-    for result in scenario_results:
-        all_xy.append(result["reference_path"][:, :2])
-        all_xy.append(result["actual_path"][:, :2])
-    all_xy = np.vstack(all_xy)
-    margin = 0.3
-    ax.set_xlim(all_xy[:, 0].min() - margin, all_xy[:, 0].max() + margin)
-    ax.set_ylim(all_xy[:, 1].min() - margin, all_xy[:, 1].max() + margin)
+    all_artists = []
+    for idx, result in enumerate(scenario_results):
+        ax = axes_flat[idx]
+        _configure_axis(ax, result["reference_path"], result["actual_path"], title=result["name"])
+        artists = _create_tracking_artists(ax, result["reference_path"], result["actual_path"])
+        all_artists.append(artists)
 
-    reference_line, = ax.plot([], [], "-r", label="reference")
-    start_marker, = ax.plot([], [], "go", markersize=7, label="start")
-    goal_marker, = ax.plot([], [], "r*", markersize=10, label="goal")
-    actual_line, = ax.plot([], [], "-b", label="actual")
-    actual_points, = ax.plot([], [], "ob", markersize=3)
-    predicted_line, = ax.plot([], [], "--g", linewidth=1.5, label="MPC prediction")
-    heading_arrow = ax.quiver([], [], [], [], angles="xy", scale_units="xy", scale=1.0, color="k")
-    body_patch = Polygon(robot_body_points(scenario_results[0]["actual_path"][0]), closed=True, fill=False, linewidth=1.8)
-    left_wheel, = ax.plot([], [], "k", linewidth=2.0)
-    right_wheel, = ax.plot([], [], "k", linewidth=2.0)
-    ax.add_patch(body_patch)
-    title_text = ax.text(0.5, 1.02, "", transform=ax.transAxes, ha="center", va="bottom", fontsize=12)
-    info_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top")
-    ax.legend(loc="lower right")
+    for idx in range(n_scenarios, len(axes_flat)):
+        axes_flat[idx].axis("off")
 
-    frame_map = []
-    for scenario_idx, result in enumerate(scenario_results):
-        for local_idx in range(len(result["actual_path"])):
-            frame_map.append((scenario_idx, local_idx))
-        # Hold the last frame briefly before switching to the next scenario.
-        for _ in range(12):
-            frame_map.append((scenario_idx, len(result["actual_path"]) - 1))
+    axes_flat[0].legend(loc="lower right", fontsize=8)
+    fig.suptitle("NMPC Multi-scenario Tracking Demo", fontsize=14)
+    fig.tight_layout()
+
+    max_frames = max(len(result["actual_path"]) for result in scenario_results)
 
     def update(global_frame_idx: int):
-        scenario_idx, frame_idx = frame_map[global_frame_idx]
-        result = scenario_results[scenario_idx]
-        reference_path = result["reference_path"]
-        actual_path = result["actual_path"]
-        predicted_paths = result.get("predicted_paths_for_gif")
-        controls = result.get("controls")
-        errors = result.get("errors")
-
-        reference_line.set_data(reference_path[:, 0], reference_path[:, 1])
-        start_marker.set_data([reference_path[0, 0]], [reference_path[0, 1]])
-        goal_marker.set_data([reference_path[-1, 0]], [reference_path[-1, 1]])
-        actual_line.set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
-        actual_points.set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
-
-        if predicted_paths is not None and frame_idx < len(predicted_paths):
-            pred = predicted_paths[frame_idx]
-            predicted_line.set_data(pred[:, 0], pred[:, 1])
-        else:
-            predicted_line.set_data([], [])
-
-        state = actual_path[frame_idx]
-        heading_arrow.set_offsets([[state[0], state[1]]])
-        heading_arrow.set_UVC([0.12 * np.cos(state[2])], [0.12 * np.sin(state[2])])
-        _set_robot_artists(body_patch, left_wheel, right_wheel, state)
-
-        title_text.set_text(f"Scenario {scenario_idx + 1}/{len(scenario_results)}: {result['name']}")
-        text_lines = [f"step: {frame_idx}"]
-        if errors is not None and frame_idx < len(errors):
-            text_lines.append(f"position error: {errors[frame_idx]:.4f} m")
-        if controls is not None and frame_idx > 0 and frame_idx - 1 < len(controls):
-            v, omega = controls[frame_idx - 1]
-            text_lines.append(f"v: {v:.3f} m/s")
-            text_lines.append(f"omega: {omega:.3f} rad/s")
-        info_text.set_text("\n".join(text_lines))
-
-        return (
-            reference_line,
-            start_marker,
-            goal_marker,
-            actual_line,
-            actual_points,
-            predicted_line,
-            heading_arrow,
-            body_patch,
-            left_wheel,
-            right_wheel,
-            title_text,
-            info_text,
-        )
+        updated = []
+        for result, artists in zip(scenario_results, all_artists):
+            updated.extend(_update_tracking_artists(artists, result, global_frame_idx))
+        return updated
 
     ani = animation.FuncAnimation(
         fig,
         update,
-        frames=len(frame_map),
+        frames=max_frames,
         interval=40,
         blit=False,
         repeat_delay=500,
