@@ -6,7 +6,14 @@
 
 ![figure 1](./assets/images/test.gif)
 
-> Note: the existing committed demo GIF is kept at the repository root so the current README preview still works. New generated figures and animations are written to `assets/images/` by default.
+> Note: new generated figures, animations, and run logs are written to `assets/` by default.
+
+The enhanced demo can generate:
+
+- `assets/images/test.gif`: NMPC tracking animation with reference path, executed path, robot heading, current MPC prediction horizon, and step information.
+- `assets/images/control_profile.png`: linear/angular velocity profile.
+- `assets/images/tracking_error.png`: position tracking error curve.
+- `assets/logs/demo_tracking.csv`: CSV log containing state, control, and error at each step.
 
 ## Quick Start
 
@@ -17,27 +24,31 @@ This repository contains a nonlinear MPC demo for differential-wheeled robot tra
 ```bash
 git clone https://github.com/zhujiwei0101/Differential-wheeled-robot-MPC-tracking.git
 cd Differential-wheeled-robot-MPC-tracking
-git checkout optimize/mpc-controller-structure
 ```
 
 ### 2. Install dependencies with uv
 
-This branch supports `uv sync` through `pyproject.toml`:
+This project supports `uv sync` through `pyproject.toml`:
 
 ```bash
 uv sync
 ```
 
-Then run the demo with:
+Then run the enhanced demo with:
 
 ```bash
 uv run python src/demo_tracking.py
 ```
 
-You can also customize the output path and optionally show a static plot:
+You can customize output paths and optionally show a static plot:
 
 ```bash
-uv run python src/demo_tracking.py --output assets/images/test.gif --show-plot
+uv run python src/demo_tracking.py \
+  --output assets/images/test.gif \
+  --control-plot assets/images/control_profile.png \
+  --error-plot assets/images/tracking_error.png \
+  --log assets/logs/demo_tracking.csv \
+  --show-plot
 ```
 
 If you prefer to create a specific Python version environment:
@@ -70,7 +81,7 @@ For backward compatibility, this also works:
 uv run python src/mpc.py
 ```
 
-The script runs an NMPC tracking example from the initial state `[-1, -1, 0]` to the target state `[0.5, 0, 0]`. It prints the robot state during execution and generates a new trajectory animation at `assets/images/test.gif`.
+The script runs an NMPC tracking example from the initial state `[-1, -1, 0]` to the target state `[0.5, 0, 0]`.
 
 ### 4. Optional: test the spline planner
 
@@ -96,14 +107,18 @@ This runs the built-in 2D cubic spline example and displays the generated spline
 │   └── cubic_spline_planner.py # 2D cubic spline path generation utility
 ├── assets/                     # Non-code assets
 │   ├── README.md               # Asset directory notes
+│   ├── logs/                   # Generated CSV run logs
+│   │   └── .gitkeep
 │   └── images/                 # Generated figures and GIFs
 │       └── .gitkeep
-└── test.gif                    # Existing NMPC visualization shown in this README
+└── test.gif                    # Existing historical NMPC visualization
 ```
 
 ## Implementation Notes
 
 The optimized controller builds the CasADi/IPOPT solver once when `MPCController` is initialized. During the control loop, each step only updates the current state, reference window, and warm-start guesses. This avoids rebuilding the optimization graph at every MPC iteration.
+
+The enhanced animation shows the current MPC prediction horizon at every frame, which helps illustrate the receding-horizon control process: the controller predicts multiple future steps but only executes the first control action.
 
 The control cost matrix is also changed to a diagonal form:
 

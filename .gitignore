@@ -10,3 +10,4 @@ token.md
 # Generated visualization outputs
 # assets/images/*.gif
 !assets/images/.gitkeep
+assets/logs
