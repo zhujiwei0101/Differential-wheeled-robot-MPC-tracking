@@ -17,6 +17,8 @@ class MPCConfig:
     y_bound: Tuple[float, float] = (-2.0, 2.0)
     q: np.ndarray = field(default_factory=lambda: np.diag([20.0, 20.0, 0.1]))
     r: np.ndarray = field(default_factory=lambda: np.diag([0.5, 0.05]))
+    obstacles: Tuple[Tuple[float, float, float], ...] = ()
+    obstacle_safety_margin: float = 0.12
 
 
 class MPCController:
@@ -79,6 +81,12 @@ class MPCController:
         opti.subject_to(opti.bounded(cfg.y_bound[0], y, cfg.y_bound[1]))
         opti.subject_to(opti.bounded(-cfg.v_max, v, cfg.v_max))
         opti.subject_to(opti.bounded(-cfg.omega_max, omega, cfg.omega_max))
+
+        for obs_x, obs_y, obs_radius in cfg.obstacles:
+            safe_radius = obs_radius + cfg.obstacle_safety_margin
+            for i in range(1, cfg.horizon + 1):
+                distance_sq = (states[i, 0] - obs_x) ** 2 + (states[i, 1] - obs_y) ** 2
+                opti.subject_to(distance_sq >= safe_radius**2)
 
         solver_options = {
             "ipopt.max_iter": 200,
