@@ -4,7 +4,7 @@
 
 ### NMPC
 
-![figure 1](./test.gif)
+![figure 1](./assets/images/test.gif)
 
 > Note: the existing committed demo GIF is kept at the repository root so the current README preview still works. New generated figures and animations are written to `assets/images/` by default.
 
@@ -17,28 +17,44 @@ This repository contains a nonlinear MPC demo for differential-wheeled robot tra
 ```bash
 git clone https://github.com/zhujiwei0101/Differential-wheeled-robot-MPC-tracking.git
 cd Differential-wheeled-robot-MPC-tracking
+git checkout optimize/mpc-controller-structure
 ```
 
-### 2. Create a Python environment
+### 2. Install dependencies with uv
 
-Using conda is recommended:
+This branch supports `uv sync` through `pyproject.toml`:
 
 ```bash
-conda create -n mpc_tracking python=3.10 -y
-conda activate mpc_tracking
+uv sync
 ```
 
-You can also use a Python virtual environment:
+Then run the demo with:
+
+```bash
+uv run python src/demo_tracking.py
+```
+
+You can also customize the output path and optionally show a static plot:
+
+```bash
+uv run python src/demo_tracking.py --output assets/images/test.gif --show-plot
+```
+
+If you prefer to create a specific Python version environment:
+
+```bash
+uv venv --python 3.10
+uv sync
+uv run python src/demo_tracking.py
+```
+
+### 3. Alternative: install dependencies with pip
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
 pip install -r requirements.txt
+python src/demo_tracking.py
 ```
 
 The main dependencies are:
@@ -48,18 +64,18 @@ The main dependencies are:
 - `matplotlib`: trajectory plotting and animation
 - `pillow`: GIF writer used by Matplotlib animation
 
-### 4. Run the demo
+For backward compatibility, this also works:
 
 ```bash
-python src/mpc.py
+uv run python src/mpc.py
 ```
 
 The script runs an NMPC tracking example from the initial state `[-1, -1, 0]` to the target state `[0.5, 0, 0]`. It prints the robot state during execution and generates a new trajectory animation at `assets/images/test.gif`.
 
-### 5. Optional: test the spline planner
+### 4. Optional: test the spline planner
 
 ```bash
-python src/cubic_spline_planner.py
+uv run python src/cubic_spline_planner.py
 ```
 
 This runs the built-in 2D cubic spline example and displays the generated spline path, yaw, and curvature plots.
@@ -69,9 +85,14 @@ This runs the built-in 2D cubic spline example and displays the generated spline
 ```text
 .
 ├── README.md                   # Project description, running instructions, and MPC derivation
-├── requirements.txt            # Python dependencies
+├── pyproject.toml              # uv project configuration
+├── requirements.txt            # Python dependencies for pip users
+├── .gitignore                  # Ignore Python caches and generated outputs
 ├── src/                        # Source code
-│   ├── mpc.py                  # Nonlinear MPC trajectory tracking demo
+│   ├── demo_tracking.py        # Runnable NMPC tracking demo
+│   ├── mpc.py                  # Backward-compatible demo entry point
+│   ├── mpc_controller.py       # Reusable NMPC controller
+│   ├── visualization.py        # Plotting and GIF utilities
 │   └── cubic_spline_planner.py # 2D cubic spline path generation utility
 ├── assets/                     # Non-code assets
 │   ├── README.md               # Asset directory notes
@@ -79,6 +100,18 @@ This runs the built-in 2D cubic spline example and displays the generated spline
 │       └── .gitkeep
 └── test.gif                    # Existing NMPC visualization shown in this README
 ```
+
+## Implementation Notes
+
+The optimized controller builds the CasADi/IPOPT solver once when `MPCController` is initialized. During the control loop, each step only updates the current state, reference window, and warm-start guesses. This avoids rebuilding the optimization graph at every MPC iteration.
+
+The control cost matrix is also changed to a diagonal form:
+
+```math
+R = \mathrm{diag}(0.5, 0.05)
+```
+
+which separately penalizes linear velocity and angular velocity.
 
 ## Preliminaries
 

@@ -1,0 +1,15 @@
+[project]
+name = "differential-wheeled-robot-mpc-tracking"
+version = "0.1.0"
+description = "Nonlinear MPC tracking demo for a differential-wheeled robot"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "casadi>=3.6",
+    "numpy>=1.21",
+    "matplotlib>=3.5",
+    "pillow>=9.0",
+]
+
+[tool.uv]
+package = false
