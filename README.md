@@ -51,10 +51,22 @@ The main dependencies are:
 ### 4. Run the demo
 
 ```bash
+python src/demo_tracking.py
+```
+
+For backward compatibility, this also works:
+
+```bash
 python src/mpc.py
 ```
 
 The script runs an NMPC tracking example from the initial state `[-1, -1, 0]` to the target state `[0.5, 0, 0]`. It prints the robot state during execution and generates a new trajectory animation at `assets/images/test.gif`.
+
+You can also customize the output path and optionally show a static plot:
+
+```bash
+python src/demo_tracking.py --output assets/images/test.gif --show-plot
+```
 
 ### 5. Optional: test the spline planner
 
@@ -70,8 +82,12 @@ This runs the built-in 2D cubic spline example and displays the generated spline
 .
 ├── README.md                   # Project description, running instructions, and MPC derivation
 ├── requirements.txt            # Python dependencies
+├── .gitignore                  # Ignore Python caches and generated outputs
 ├── src/                        # Source code
-│   ├── mpc.py                  # Nonlinear MPC trajectory tracking demo
+│   ├── demo_tracking.py        # Runnable NMPC tracking demo
+│   ├── mpc.py                  # Backward-compatible demo entry point
+│   ├── mpc_controller.py       # Reusable NMPC controller
+│   ├── visualization.py        # Plotting and GIF utilities
 │   └── cubic_spline_planner.py # 2D cubic spline path generation utility
 ├── assets/                     # Non-code assets
 │   ├── README.md               # Asset directory notes
@@ -79,6 +95,18 @@ This runs the built-in 2D cubic spline example and displays the generated spline
 │       └── .gitkeep
 └── test.gif                    # Existing NMPC visualization shown in this README
 ```
+
+## Implementation Notes
+
+The optimized controller builds the CasADi/IPOPT solver once when `MPCController` is initialized. During the control loop, each step only updates the current state, reference window, and warm-start guesses. This avoids rebuilding the optimization graph at every MPC iteration.
+
+The control cost matrix is also changed to a diagonal form:
+
+```math
+R = \mathrm{diag}(0.5, 0.05)
+```
+
+which separately penalizes linear velocity and angular velocity.
 
 ## Preliminaries
 
