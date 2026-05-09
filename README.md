@@ -4,7 +4,7 @@
 
 ### NMPC
 
-![figure 1](./test.gif)
+![figure 1](./assets/images/test.gif)
 
 > Note: the existing committed demo GIF is kept at the repository root so the current README preview still works. New generated figures and animations are written to `assets/images/` by default.
 
