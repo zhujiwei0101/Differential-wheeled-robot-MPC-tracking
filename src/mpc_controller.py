@@ -90,7 +90,12 @@ class MPCController:
         opti.subject_to(opti.bounded(-cfg.omega_max, omega, cfg.omega_max))
 
         if cfg.obstacles and obstacle_slacks is not None:
-            opti.subject_to(obstacle_slacks >= 0.0)
+            # CasADi treats matrix inequalities specially. Use element-wise scalar
+            # constraints instead of `obstacle_slacks >= 0.0`.
+            for slack_idx in range(cfg.horizon):
+                for obs_idx in range(len(cfg.obstacles)):
+                    opti.subject_to(obstacle_slacks[slack_idx, obs_idx] >= 0.0)
+
             for obs_idx, (obs_x, obs_y, obs_radius) in enumerate(cfg.obstacles):
                 safe_radius = obs_radius + cfg.obstacle_safety_margin
                 for i in range(1, cfg.horizon + 1):
