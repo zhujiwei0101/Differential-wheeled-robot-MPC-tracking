@@ -98,7 +98,18 @@ def generate_reference_path(waypoints: np.ndarray, horizon: int, ds: float = 0.0
     while len(reference_path) <= horizon + 1:
         reference_path.append(reference_path[-1])
 
-    return np.asarray(reference_path)
+    reference_path = np.asarray(reference_path)
+    # Yaw is periodic. Without unwrap, the upper circle may jump from +pi to -pi,
+    # which makes the MPC believe there is a huge heading error and turn abruptly.
+    reference_path[:, 2] = np.unwrap(reference_path[:, 2])
+    return reference_path
+
+
+def align_state_yaw_to_reference(state: np.ndarray, reference_yaw: float) -> np.ndarray:
+    """Shift state yaw by multiples of 2pi so it is close to the reference yaw."""
+    aligned = state.copy()
+    aligned[2] = reference_yaw + np.arctan2(np.sin(aligned[2] - reference_yaw), np.cos(aligned[2] - reference_yaw))
+    return aligned
 
 
 def get_reference_window(
@@ -129,9 +140,9 @@ def get_reference_window(
         window = np.vstack([window, padding])
 
     # Force the first predicted state to be consistent with the measured state,
-    # while keeping the remaining horizon tied to path progress.
+    # while keeping yaw in the same continuous angle branch as the reference.
     window = window.copy()
-    window[0] = current_state
+    window[0] = align_state_yaw_to_reference(current_state, window[0, 2])
     return window, progress_index
 
 
@@ -145,7 +156,7 @@ def simulate_tracking_segment(
     waypoints = get_scenario_waypoints(scenario_name)
     reference_path = generate_reference_path(waypoints, horizon=config.horizon)
 
-    current_state = reference_path[0].copy() if start_state is None else start_state.copy()
+    current_state = reference_path[0].copy() if start_state is None else align_state_yaw_to_reference(start_state, reference_path[0, 2])
     goal_state = reference_path[-1].copy()
     progress_index = 0
     actual_path = [current_state.copy()]
@@ -167,6 +178,8 @@ def simulate_tracking_segment(
         )
 
         control, current_state, predicted_states = controller.solve_step(current_state, reference_window)
+        # Keep the simulated yaw on the same continuous branch as the local reference.
+        current_state = align_state_yaw_to_reference(current_state, reference_window[1, 2])
         controls.append(control)
         predicted_paths.append(predicted_states)
         actual_path.append(current_state.copy())
