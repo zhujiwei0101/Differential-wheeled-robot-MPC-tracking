@@ -21,6 +21,12 @@ DEFAULT_CONTROL_PLOT = os.path.join("assets", "images", "control_profile.png")
 DEFAULT_ERROR_PLOT = os.path.join("assets", "images", "tracking_error.png")
 DEFAULT_LOG_CSV = os.path.join("assets", "logs", "demo_tracking.csv")
 DEFAULT_SCENARIOS = ["curve", "s_curve", "circle"]
+OBSTACLE_SCENARIO_NAME = "obstacle"
+OBSTACLE_SCENARIO_OBSTACLES = (
+    (-0.35, 0.0, 0.18),
+    (0.35, 0.0, 0.18),
+)
+OBSTACLE_SAFETY_MARGIN = 0.12
 
 
 def get_scenario_waypoints(name: str) -> np.ndarray:
@@ -58,11 +64,39 @@ def get_scenario_waypoints(name: str) -> np.ndarray:
                 [1.1, -0.2, 0.0],
             ]
         ),
+        # The nominal obstacle reference is intentionally a straight line that
+        # passes between obstacle regions. The MPC obstacle constraints force the
+        # executed trajectory to deviate while still tracking the overall goal.
+        "obstacle": np.array(
+            [
+                [-1.25, 0.0, 0.0],
+                [-0.65, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.65, 0.0, 0.0],
+                [1.25, 0.0, 0.0],
+            ]
+        ),
     }
     if name not in scenarios:
         valid = ", ".join(sorted([*scenarios.keys(), "circle", "circle_upper", "circle_lower"]))
         raise ValueError(f"Unknown scenario '{name}'. Available scenarios: {valid}")
     return scenarios[name]
+
+
+def make_config(scenario_name: str) -> MPCConfig:
+    if scenario_name == OBSTACLE_SCENARIO_NAME:
+        return MPCConfig(
+            dt=0.05,
+            horizon=50,
+            omega_max=np.pi,
+            x_bound=(-1.6, 1.6),
+            y_bound=(-1.2, 1.2),
+            q=np.diag([18.0, 18.0, 0.2]),
+            r=np.diag([0.45, 0.04]),
+            obstacles=OBSTACLE_SCENARIO_OBSTACLES,
+            obstacle_safety_margin=OBSTACLE_SAFETY_MARGIN,
+        )
+    return MPCConfig(dt=0.05, horizon=50)
 
 
 def generate_reference_path(waypoints: np.ndarray, horizon: int, ds: float = 0.02) -> np.ndarray:
@@ -86,15 +120,7 @@ def generate_reference_path(waypoints: np.ndarray, horizon: int, ds: float = 0.0
 
 
 def generate_circle_reference_path(horizon: int, radius: float = 0.7, ds: float = 0.02) -> np.ndarray:
-    """Generate one geometrically continuous circular reference path.
-
-    The previous implementation generated the upper and lower half-circles as two
-    independent cubic splines. Even if the endpoints coincide, the spline tangent
-    and curvature are not guaranteed to match at the split point, so the plotted
-    circle can look sharp at the boundary. This parametric circle keeps position,
-    tangent, yaw, and curvature continuous. The tracking code can still execute it
-    as two open half-circle segments to avoid the closed-loop start==goal issue.
-    """
+    """Generate one geometrically continuous circular reference path."""
     arc_length = 2.0 * np.pi * radius
     n_points = max(int(np.ceil(arc_length / ds)) + 1, horizon + 2)
     angles = np.linspace(0.0, 2.0 * np.pi, n_points)
@@ -159,6 +185,7 @@ def simulate_tracking_reference(
     config: MPCConfig,
     start_state: np.ndarray | None = None,
     max_steps: int = 1000,
+    layout: str | None = None,
 ) -> dict:
     controller = MPCController(config)
     current_state = reference_path[0].copy() if start_state is None else align_state_yaw_to_reference(start_state, reference_path[0, 2])
@@ -204,6 +231,9 @@ def simulate_tracking_reference(
         "errors": errors,
         "predicted_paths": predicted_paths,
         "predicted_paths_for_gif": predicted_paths_for_gif,
+        "obstacles": config.obstacles,
+        "obstacle_safety_margin": config.obstacle_safety_margin,
+        "layout": layout,
     }
 
 
@@ -212,13 +242,21 @@ def simulate_tracking_segment(
     config: MPCConfig,
     start_state: np.ndarray | None = None,
     max_steps: int = 1000,
+    layout: str | None = None,
 ) -> dict:
     if scenario_name in {"circle_upper", "circle_lower"}:
         reference_path = get_circle_reference_segment(scenario_name, horizon=config.horizon)
     else:
         waypoints = get_scenario_waypoints(scenario_name)
         reference_path = generate_reference_path(waypoints, horizon=config.horizon)
-    return simulate_tracking_reference(scenario_name, reference_path, config, start_state=start_state, max_steps=max_steps)
+    return simulate_tracking_reference(
+        scenario_name,
+        reference_path,
+        config,
+        start_state=start_state,
+        max_steps=max_steps,
+        layout=layout,
+    )
 
 
 def _merge_segment_results(name: str, segments: list[dict], reference_path: np.ndarray | None = None) -> dict:
@@ -251,25 +289,29 @@ def _merge_segment_results(name: str, segments: list[dict], reference_path: np.n
         "errors": errors,
         "predicted_paths": predicted_paths,
         "predicted_paths_for_gif": predicted_paths_for_gif,
+        "obstacles": (),
+        "obstacle_safety_margin": 0.0,
+        "layout": None,
     }
 
 
-def simulate_tracking(scenario_name: str, config: MPCConfig, max_steps: int = 1000) -> dict:
+def simulate_tracking(scenario_name: str, config: MPCConfig | None = None, max_steps: int = 1000, layout: str | None = None) -> dict:
+    cfg = config or make_config(scenario_name)
     if scenario_name == "circle":
-        full_reference = generate_circle_reference_path(horizon=config.horizon)
+        full_reference = generate_circle_reference_path(horizon=cfg.horizon)
         split_index = (len(full_reference) - 1) // 2
         upper_reference = full_reference[: split_index + 1]
         lower_reference = full_reference[split_index:]
-        upper = simulate_tracking_reference("circle_upper", upper_reference, config, max_steps=max_steps)
+        upper = simulate_tracking_reference("circle_upper", upper_reference, cfg, max_steps=max_steps)
         lower = simulate_tracking_reference(
             "circle_lower",
             lower_reference,
-            config,
+            cfg,
             start_state=upper["actual_path"][-1],
             max_steps=max_steps,
         )
         return _merge_segment_results("circle", [upper, lower], reference_path=full_reference)
-    return simulate_tracking_segment(scenario_name, config, max_steps=max_steps)
+    return simulate_tracking_segment(scenario_name, cfg, max_steps=max_steps, layout=layout)
 
 
 def run_demo(
@@ -281,8 +323,8 @@ def run_demo(
     show_plot: bool = False,
     save_metrics: bool = True,
 ) -> None:
-    config = MPCConfig(dt=0.05, horizon=50)
-    result = simulate_tracking(scenario, config)
+    config = make_config(scenario)
+    result = simulate_tracking(scenario, config=config)
 
     save_tracking_gif(
         result["reference_path"],
@@ -291,6 +333,8 @@ def run_demo(
         predicted_paths=result["predicted_paths_for_gif"],
         controls=result["controls"],
         errors=result["errors"],
+        obstacles=result.get("obstacles"),
+        obstacle_safety_margin=result.get("obstacle_safety_margin", 0.0),
     )
     print(f"Saved tracking GIF to {output_path}")
 
@@ -311,15 +355,20 @@ def run_multi_scenario_demo(
     output_path: str = DEFAULT_MULTI_SCENARIO_GIF,
     max_steps: int = 1000,
 ) -> None:
-    config = MPCConfig(dt=0.05, horizon=50)
-    scenario_results = [simulate_tracking(name, config, max_steps=max_steps) for name in scenarios]
+    scenario_results = [simulate_tracking(name, max_steps=max_steps) for name in scenarios]
+    if OBSTACLE_SCENARIO_NAME not in scenarios:
+        scenario_results.append(simulate_tracking(OBSTACLE_SCENARIO_NAME, max_steps=max_steps, layout="wide"))
+    else:
+        for result in scenario_results:
+            if result["name"] == OBSTACLE_SCENARIO_NAME:
+                result["layout"] = "wide"
     save_multi_scenario_gif(scenario_results, output_path)
     print(f"Saved multi-scenario GIF to {output_path}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the differential-wheeled robot NMPC tracking demo.")
-    scenario_choices = ["line", "curve", "s_curve", "circle", "circle_upper", "circle_lower", "zigzag"]
+    scenario_choices = ["line", "curve", "s_curve", "circle", "circle_upper", "circle_lower", "zigzag", "obstacle"]
     parser.add_argument(
         "--output",
         default=DEFAULT_MULTI_SCENARIO_GIF,
@@ -329,14 +378,14 @@ def parse_args() -> argparse.Namespace:
         "--scenario",
         default="curve",
         choices=scenario_choices,
-        help="Scenario used when --multi-scenario is disabled.",
+        help="Scenario used when --single-scenario is enabled.",
     )
     parser.add_argument(
         "--scenarios",
         nargs="+",
         default=DEFAULT_SCENARIOS,
         choices=scenario_choices,
-        help="Scenario list rendered together in one multi-panel GIF.",
+        help="Top-row scenario list rendered together in one multi-panel GIF. The obstacle scenario is appended as the wide second-row panel by default.",
     )
     parser.add_argument(
         "--single-scenario",
