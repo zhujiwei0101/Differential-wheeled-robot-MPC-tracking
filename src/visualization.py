@@ -4,7 +4,8 @@ import os
 from typing import Sequence
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon
+from matplotlib.gridspec import GridSpec
+from matplotlib.patches import Circle, Polygon
 import numpy as np
 
 
@@ -73,7 +74,7 @@ def plot_tracking_result(reference_path: np.ndarray, actual_path: np.ndarray) ->
     plt.show()
 
 
-def _configure_axis(ax, reference_path: np.ndarray, actual_path: np.ndarray, title: str | None = None) -> None:
+def _configure_axis(ax, reference_path: np.ndarray, actual_path: np.ndarray, title: str | None = None, obstacles=None) -> None:
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True)
     ax.set_xlabel("x [m]")
@@ -82,7 +83,11 @@ def _configure_axis(ax, reference_path: np.ndarray, actual_path: np.ndarray, tit
         ax.set_title(title)
 
     margin = 0.25
-    all_xy = np.vstack([reference_path[:, :2], actual_path[:, :2]])
+    all_xy = [reference_path[:, :2], actual_path[:, :2]]
+    if obstacles:
+        for obs_x, obs_y, obs_radius in obstacles:
+            all_xy.append(np.array([[obs_x - obs_radius, obs_y - obs_radius], [obs_x + obs_radius, obs_y + obs_radius]]))
+    all_xy = np.vstack(all_xy)
     x_min, y_min = all_xy.min(axis=0)
     x_max, y_max = all_xy.max(axis=0)
     x_center = 0.5 * (x_min + x_max)
@@ -92,10 +97,22 @@ def _configure_axis(ax, reference_path: np.ndarray, actual_path: np.ndarray, tit
     ax.set_ylim(y_center - half_range, y_center + half_range)
 
 
-def _create_tracking_artists(ax, reference_path: np.ndarray, actual_path: np.ndarray):
+def _draw_obstacles(ax, obstacles=None, safety_margin: float = 0.0) -> None:
+    if not obstacles:
+        return
+    for obs_x, obs_y, obs_radius in obstacles:
+        obstacle = Circle((obs_x, obs_y), obs_radius, fill=True, alpha=0.25, linewidth=1.5, label="obstacle")
+        ax.add_patch(obstacle)
+        if safety_margin > 0.0:
+            safe = Circle((obs_x, obs_y), obs_radius + safety_margin, fill=False, linestyle="--", linewidth=1.2, label="safety boundary")
+            ax.add_patch(safe)
+
+
+def _create_tracking_artists(ax, reference_path: np.ndarray, actual_path: np.ndarray, obstacles=None, safety_margin: float = 0.0):
     ax.plot(reference_path[:, 0], reference_path[:, 1], "-r", label="reference")
     ax.plot(reference_path[0, 0], reference_path[0, 1], "go", markersize=6, label="start")
     ax.plot(reference_path[-1, 0], reference_path[-1, 1], "r*", markersize=9, label="goal")
+    _draw_obstacles(ax, obstacles, safety_margin=safety_margin)
     actual_line, = ax.plot([], [], "-b", label="actual")
     actual_points, = ax.plot([], [], "ob", markersize=2.5)
     predicted_line, = ax.plot([], [], "--g", linewidth=1.2, label="MPC prediction")
@@ -157,20 +174,22 @@ def save_tracking_gif(
     controls: np.ndarray | None = None,
     errors: np.ndarray | None = None,
     robot_arrow_length: float = 0.12,
+    obstacles=None,
+    obstacle_safety_margin: float = 0.0,
 ) -> None:
     """Save an enhanced single-scenario NMPC tracking animation."""
     import matplotlib.animation as animation
 
     ensure_parent_dir(output_path)
     fig, ax = plt.subplots(figsize=(7, 5))
-    _configure_axis(ax, reference_path, actual_path)
+    _configure_axis(ax, reference_path, actual_path, obstacles=obstacles)
     result = {
         "actual_path": actual_path,
         "predicted_paths_for_gif": predicted_paths,
         "controls": controls,
         "errors": errors,
     }
-    artists = _create_tracking_artists(ax, reference_path, actual_path)
+    artists = _create_tracking_artists(ax, reference_path, actual_path, obstacles=obstacles, safety_margin=obstacle_safety_margin)
     ax.legend(loc="lower right")
 
     def update(frame_idx: int):
@@ -189,38 +208,63 @@ def save_tracking_gif(
 
 
 def save_multi_scenario_gif(scenario_results: Sequence[dict], output_path: str) -> None:
-    """Save one GIF showing multiple scenarios at the same time."""
+    """Save one GIF with three standard panels and one wide obstacle panel."""
     import matplotlib.animation as animation
 
     ensure_parent_dir(output_path)
     if not scenario_results:
         raise ValueError("scenario_results must not be empty")
 
-    n_scenarios = len(scenario_results)
-    n_cols = min(3, n_scenarios)
-    n_rows = math.ceil(n_scenarios / n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5.2 * n_cols, 4.2 * n_rows), squeeze=False)
-    axes_flat = axes.ravel()
+    top_results = [result for result in scenario_results if result.get("layout") != "wide"]
+    wide_results = [result for result in scenario_results if result.get("layout") == "wide"]
 
-    all_artists = []
-    for idx, result in enumerate(scenario_results):
-        ax = axes_flat[idx]
-        _configure_axis(ax, result["reference_path"], result["actual_path"], title=result["name"])
-        artists = _create_tracking_artists(ax, result["reference_path"], result["actual_path"])
-        all_artists.append(artists)
+    n_top = min(3, len(top_results))
+    fig = plt.figure(figsize=(15.6, 8.8))
+    gs = GridSpec(2, 3, figure=fig, height_ratios=[1.0, 1.15])
+    axes = []
+    ordered_results = []
 
-    for idx in range(n_scenarios, len(axes_flat)):
-        axes_flat[idx].axis("off")
+    for idx in range(3):
+        ax = fig.add_subplot(gs[0, idx])
+        if idx < n_top:
+            result = top_results[idx]
+            _configure_axis(ax, result["reference_path"], result["actual_path"], title=result["name"], obstacles=result.get("obstacles"))
+            artists = _create_tracking_artists(
+                ax,
+                result["reference_path"],
+                result["actual_path"],
+                obstacles=result.get("obstacles"),
+                safety_margin=result.get("obstacle_safety_margin", 0.0),
+            )
+            axes.append((ax, artists))
+            ordered_results.append(result)
+        else:
+            ax.axis("off")
 
-    axes_flat[0].legend(loc="lower right", fontsize=8)
+    if wide_results:
+        result = wide_results[0]
+        ax = fig.add_subplot(gs[1, :])
+        _configure_axis(ax, result["reference_path"], result["actual_path"], title=result["name"], obstacles=result.get("obstacles"))
+        artists = _create_tracking_artists(
+            ax,
+            result["reference_path"],
+            result["actual_path"],
+            obstacles=result.get("obstacles"),
+            safety_margin=result.get("obstacle_safety_margin", 0.0),
+        )
+        axes.append((ax, artists))
+        ordered_results.append(result)
+
+    if axes:
+        axes[0][0].legend(loc="lower right", fontsize=8)
     fig.suptitle("NMPC Multi-scenario Tracking Demo", fontsize=14)
     fig.tight_layout()
 
-    max_frames = max(len(result["actual_path"]) for result in scenario_results)
+    max_frames = max(len(result["actual_path"]) for result in ordered_results)
 
     def update(global_frame_idx: int):
         updated = []
-        for result, artists in zip(scenario_results, all_artists):
+        for result, (_, artists) in zip(ordered_results, axes):
             updated.extend(_update_tracking_artists(artists, result, global_frame_idx))
         return updated
 
