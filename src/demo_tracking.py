@@ -49,26 +49,6 @@ def get_scenario_waypoints(name: str) -> np.ndarray:
                 [0.9, 0.6, 0.0],
             ]
         ),
-        # A closed circle cannot be tracked as one segment with a point-goal
-        # termination rule, because start and goal coincide. Use two half-circles.
-        "circle_upper": np.array(
-            [
-                [0.6, 0.0, 0.0],
-                [0.35, 0.55, 0.0],
-                [0.0, 0.7, 0.0],
-                [-0.35, 0.55, 0.0],
-                [-0.6, 0.0, 0.0],
-            ]
-        ),
-        "circle_lower": np.array(
-            [
-                [-0.6, 0.0, 0.0],
-                [-0.35, -0.55, 0.0],
-                [0.0, -0.7, 0.0],
-                [0.35, -0.55, 0.0],
-                [0.6, 0.0, 0.0],
-            ]
-        ),
         "zigzag": np.array(
             [
                 [-1.1, -0.7, 0.0],
@@ -80,7 +60,7 @@ def get_scenario_waypoints(name: str) -> np.ndarray:
         ),
     }
     if name not in scenarios:
-        valid = ", ".join(sorted([*scenarios.keys(), "circle"]))
+        valid = ", ".join(sorted([*scenarios.keys(), "circle", "circle_upper", "circle_lower"]))
         raise ValueError(f"Unknown scenario '{name}'. Available scenarios: {valid}")
     return scenarios[name]
 
@@ -99,10 +79,46 @@ def generate_reference_path(waypoints: np.ndarray, horizon: int, ds: float = 0.0
         reference_path.append(reference_path[-1])
 
     reference_path = np.asarray(reference_path)
-    # Yaw is periodic. Without unwrap, the upper circle may jump from +pi to -pi,
-    # which makes the MPC believe there is a huge heading error and turn abruptly.
+    # Yaw is periodic. Without unwrap, yaw may jump from +pi to -pi,
+    # which makes the MPC believe there is a huge heading error.
     reference_path[:, 2] = np.unwrap(reference_path[:, 2])
     return reference_path
+
+
+def generate_circle_reference_path(horizon: int, radius: float = 0.7, ds: float = 0.02) -> np.ndarray:
+    """Generate one geometrically continuous circular reference path.
+
+    The previous implementation generated the upper and lower half-circles as two
+    independent cubic splines. Even if the endpoints coincide, the spline tangent
+    and curvature are not guaranteed to match at the split point, so the plotted
+    circle can look sharp at the boundary. This parametric circle keeps position,
+    tangent, yaw, and curvature continuous. The tracking code can still execute it
+    as two open half-circle segments to avoid the closed-loop start==goal issue.
+    """
+    arc_length = 2.0 * np.pi * radius
+    n_points = max(int(np.ceil(arc_length / ds)) + 1, horizon + 2)
+    angles = np.linspace(0.0, 2.0 * np.pi, n_points)
+
+    x = radius * np.cos(angles)
+    y = radius * np.sin(angles)
+    yaw = angles + np.pi / 2.0
+    reference_path = np.column_stack([x, y, yaw])
+
+    while len(reference_path) <= horizon + 1:
+        reference_path = np.vstack([reference_path, reference_path[-1]])
+
+    reference_path[:, 2] = np.unwrap(reference_path[:, 2])
+    return reference_path
+
+
+def get_circle_reference_segment(name: str, horizon: int) -> np.ndarray:
+    full_reference = generate_circle_reference_path(horizon=horizon)
+    split_index = (len(full_reference) - 1) // 2
+    if name == "circle_upper":
+        return full_reference[: split_index + 1]
+    if name == "circle_lower":
+        return full_reference[split_index:]
+    raise ValueError(f"Unknown circle segment '{name}'")
 
 
 def align_state_yaw_to_reference(state: np.ndarray, reference_yaw: float) -> np.ndarray:
@@ -119,14 +135,7 @@ def get_reference_window(
     progress_index: int,
     search_back: int = 5,
 ) -> tuple[np.ndarray, int]:
-    """Find a progress-based local reference window.
-
-    The previous demo advanced the reference by exactly one path point per control
-    step. On high-curvature paths this can make the reference window run ahead of
-    the robot, so the optimizer may cut across the curve. This function instead
-    anchors the window around the nearest forward reference point and prevents the
-    progress index from moving backward.
-    """
+    """Find a progress-based local reference window."""
     search_start = max(progress_index - search_back, 0)
     search_path = reference_path[search_start:, :2]
     distances = np.linalg.norm(search_path - current_state[:2], axis=1)
@@ -139,23 +148,19 @@ def get_reference_window(
         padding = np.repeat(reference_path[-1][None, :], horizon + 1 - len(window), axis=0)
         window = np.vstack([window, padding])
 
-    # Force the first predicted state to be consistent with the measured state,
-    # while keeping yaw in the same continuous angle branch as the reference.
     window = window.copy()
     window[0] = align_state_yaw_to_reference(current_state, window[0, 2])
     return window, progress_index
 
 
-def simulate_tracking_segment(
+def simulate_tracking_reference(
     scenario_name: str,
+    reference_path: np.ndarray,
     config: MPCConfig,
     start_state: np.ndarray | None = None,
     max_steps: int = 1000,
 ) -> dict:
     controller = MPCController(config)
-    waypoints = get_scenario_waypoints(scenario_name)
-    reference_path = generate_reference_path(waypoints, horizon=config.horizon)
-
     current_state = reference_path[0].copy() if start_state is None else align_state_yaw_to_reference(start_state, reference_path[0, 2])
     goal_state = reference_path[-1].copy()
     progress_index = 0
@@ -178,7 +183,6 @@ def simulate_tracking_segment(
         )
 
         control, current_state, predicted_states = controller.solve_step(current_state, reference_window)
-        # Keep the simulated yaw on the same continuous branch as the local reference.
         current_state = align_state_yaw_to_reference(current_state, reference_window[1, 2])
         controls.append(control)
         predicted_paths.append(predicted_states)
@@ -203,7 +207,21 @@ def simulate_tracking_segment(
     }
 
 
-def _merge_segment_results(name: str, segments: list[dict]) -> dict:
+def simulate_tracking_segment(
+    scenario_name: str,
+    config: MPCConfig,
+    start_state: np.ndarray | None = None,
+    max_steps: int = 1000,
+) -> dict:
+    if scenario_name in {"circle_upper", "circle_lower"}:
+        reference_path = get_circle_reference_segment(scenario_name, horizon=config.horizon)
+    else:
+        waypoints = get_scenario_waypoints(scenario_name)
+        reference_path = generate_reference_path(waypoints, horizon=config.horizon)
+    return simulate_tracking_reference(scenario_name, reference_path, config, start_state=start_state, max_steps=max_steps)
+
+
+def _merge_segment_results(name: str, segments: list[dict], reference_path: np.ndarray | None = None) -> dict:
     reference_parts = []
     actual_parts = []
     controls_parts = []
@@ -219,7 +237,7 @@ def _merge_segment_results(name: str, segments: list[dict]) -> dict:
         errors_parts.append(segment["errors"][start:])
         predicted_paths.extend(segment["predicted_paths"])
 
-    reference_path = np.vstack(reference_parts)
+    merged_reference_path = reference_path if reference_path is not None else np.vstack(reference_parts)
     actual_path = np.vstack(actual_parts)
     controls = np.vstack(controls_parts) if controls_parts else np.empty((0, 2))
     errors = np.concatenate(errors_parts)
@@ -227,7 +245,7 @@ def _merge_segment_results(name: str, segments: list[dict]) -> dict:
 
     return {
         "name": name,
-        "reference_path": reference_path,
+        "reference_path": merged_reference_path,
         "actual_path": actual_path,
         "controls": controls,
         "errors": errors,
@@ -238,14 +256,19 @@ def _merge_segment_results(name: str, segments: list[dict]) -> dict:
 
 def simulate_tracking(scenario_name: str, config: MPCConfig, max_steps: int = 1000) -> dict:
     if scenario_name == "circle":
-        upper = simulate_tracking_segment("circle_upper", config, max_steps=max_steps)
-        lower = simulate_tracking_segment(
+        full_reference = generate_circle_reference_path(horizon=config.horizon)
+        split_index = (len(full_reference) - 1) // 2
+        upper_reference = full_reference[: split_index + 1]
+        lower_reference = full_reference[split_index:]
+        upper = simulate_tracking_reference("circle_upper", upper_reference, config, max_steps=max_steps)
+        lower = simulate_tracking_reference(
             "circle_lower",
+            lower_reference,
             config,
             start_state=upper["actual_path"][-1],
             max_steps=max_steps,
         )
-        return _merge_segment_results("circle", [upper, lower])
+        return _merge_segment_results("circle", [upper, lower], reference_path=full_reference)
     return simulate_tracking_segment(scenario_name, config, max_steps=max_steps)
 
 
