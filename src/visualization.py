@@ -83,8 +83,13 @@ def _configure_axis(ax, reference_path: np.ndarray, actual_path: np.ndarray, tit
 
     margin = 0.25
     all_xy = np.vstack([reference_path[:, :2], actual_path[:, :2]])
-    ax.set_xlim(all_xy[:, 0].min() - margin, all_xy[:, 0].max() + margin)
-    ax.set_ylim(all_xy[:, 1].min() - margin, all_xy[:, 1].max() + margin)
+    x_min, y_min = all_xy.min(axis=0)
+    x_max, y_max = all_xy.max(axis=0)
+    x_center = 0.5 * (x_min + x_max)
+    y_center = 0.5 * (y_min + y_max)
+    half_range = 0.5 * max(x_max - x_min, y_max - y_min) + margin
+    ax.set_xlim(x_center - half_range, x_center + half_range)
+    ax.set_ylim(y_center - half_range, y_center + half_range)
 
 
 def _create_tracking_artists(ax, reference_path: np.ndarray, actual_path: np.ndarray):
