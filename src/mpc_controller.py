@@ -19,6 +19,8 @@ class MPCConfig:
     r: np.ndarray = field(default_factory=lambda: np.diag([0.5, 0.05]))
     obstacles: Tuple[Tuple[float, float, float], ...] = ()
     obstacle_safety_margin: float = 0.12
+    obstacle_slack_weight: float = 1.0e5
+    obstacle_repulsion_weight: float = 0.05
 
 
 class MPCController:
@@ -33,6 +35,9 @@ class MPCController:
         self._build_solver()
         self._state_guess = np.zeros((self.config.horizon + 1, 3))
         self._control_guess = np.zeros((self.config.horizon, 2))
+        self._obstacle_slack_guess = None
+        if self.config.obstacles:
+            self._obstacle_slack_guess = np.zeros((self.config.horizon, len(self.config.obstacles)))
 
     @staticmethod
     def dynamics_np(state: np.ndarray, control: np.ndarray) -> np.ndarray:
@@ -49,6 +54,9 @@ class MPCController:
 
         controls = opti.variable(cfg.horizon, 2)
         states = opti.variable(cfg.horizon + 1, 3)
+        obstacle_slacks = None
+        if cfg.obstacles:
+            obstacle_slacks = opti.variable(cfg.horizon, len(cfg.obstacles))
 
         v = controls[:, 0]
         omega = controls[:, 1]
@@ -76,23 +84,31 @@ class MPCController:
             objective += ca.mtimes([state_error, cfg.q, state_error.T])
             objective += ca.mtimes([controls[i, :], cfg.r, controls[i, :].T])
 
-        opti.minimize(objective)
         opti.subject_to(opti.bounded(cfg.x_bound[0], x, cfg.x_bound[1]))
         opti.subject_to(opti.bounded(cfg.y_bound[0], y, cfg.y_bound[1]))
         opti.subject_to(opti.bounded(-cfg.v_max, v, cfg.v_max))
         opti.subject_to(opti.bounded(-cfg.omega_max, omega, cfg.omega_max))
 
-        for obs_x, obs_y, obs_radius in cfg.obstacles:
-            safe_radius = obs_radius + cfg.obstacle_safety_margin
-            for i in range(1, cfg.horizon + 1):
-                distance_sq = (states[i, 0] - obs_x) ** 2 + (states[i, 1] - obs_y) ** 2
-                opti.subject_to(distance_sq >= safe_radius**2)
+        if cfg.obstacles and obstacle_slacks is not None:
+            opti.subject_to(obstacle_slacks >= 0.0)
+            for obs_idx, (obs_x, obs_y, obs_radius) in enumerate(cfg.obstacles):
+                safe_radius = obs_radius + cfg.obstacle_safety_margin
+                for i in range(1, cfg.horizon + 1):
+                    distance_sq = (states[i, 0] - obs_x) ** 2 + (states[i, 1] - obs_y) ** 2
+                    slack = obstacle_slacks[i - 1, obs_idx]
+                    # Soft safety constraint: slack keeps the nonlinear program feasible,
+                    # while the large penalty still strongly discourages safety violation.
+                    opti.subject_to(distance_sq + slack >= safe_radius**2)
+                    objective += cfg.obstacle_slack_weight * slack**2
+                    objective += cfg.obstacle_repulsion_weight / (distance_sq + 1.0e-4)
+
+        opti.minimize(objective)
 
         solver_options = {
-            "ipopt.max_iter": 200,
+            "ipopt.max_iter": 300,
             "ipopt.print_level": 0,
             "print_time": 0,
-            "ipopt.acceptable_tol": 1e-8,
+            "ipopt.acceptable_tol": 1e-7,
             "ipopt.acceptable_obj_change_tol": 1e-6,
         }
         opti.solver("ipopt", solver_options)
@@ -100,6 +116,7 @@ class MPCController:
         self.opti = opti
         self.controls = controls
         self.states = states
+        self.obstacle_slacks = obstacle_slacks
         self.x0 = x0
         self.x_ref = x_ref
 
@@ -123,6 +140,8 @@ class MPCController:
         self.opti.set_value(self.x_ref, reference_window[: cfg.horizon + 1])
         self.opti.set_initial(self.controls, self._control_guess)
         self.opti.set_initial(self.states, self._state_guess)
+        if self.obstacle_slacks is not None and self._obstacle_slack_guess is not None:
+            self.opti.set_initial(self.obstacle_slacks, self._obstacle_slack_guess)
 
         solution = self.opti.solve()
         optimized_controls = solution.value(self.controls)
@@ -133,5 +152,8 @@ class MPCController:
 
         self._control_guess = np.vstack([optimized_controls[1:], optimized_controls[-1:]])
         self._state_guess = np.vstack([predicted_states[1:], predicted_states[-1:]])
+        if self.obstacle_slacks is not None and self._obstacle_slack_guess is not None:
+            optimized_slacks = solution.value(self.obstacle_slacks)
+            self._obstacle_slack_guess = np.vstack([optimized_slacks[1:], optimized_slacks[-1:]])
 
         return first_control, next_state, predicted_states
