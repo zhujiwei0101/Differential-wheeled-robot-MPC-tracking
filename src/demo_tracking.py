@@ -23,10 +23,10 @@ DEFAULT_LOG_CSV = os.path.join("assets", "logs", "demo_tracking.csv")
 DEFAULT_SCENARIOS = ["curve", "s_curve", "circle"]
 OBSTACLE_SCENARIO_NAME = "obstacle"
 OBSTACLE_SCENARIO_OBSTACLES = (
-    (-0.35, 0.0, 0.18),
-    (0.35, 0.0, 0.18),
+    (-0.35, 0.0, 0.16),
+    (0.35, 0.0, 0.16),
 )
-OBSTACLE_SAFETY_MARGIN = 0.12
+OBSTACLE_SAFETY_MARGIN = 0.10
 
 
 def get_scenario_waypoints(name: str) -> np.ndarray:
@@ -64,15 +64,16 @@ def get_scenario_waypoints(name: str) -> np.ndarray:
                 [1.1, -0.2, 0.0],
             ]
         ),
-        # The nominal obstacle reference is intentionally a straight line that
-        # passes between obstacle regions. The MPC obstacle constraints force the
-        # executed trajectory to deviate while still tracking the overall goal.
+        # A guided reference around obstacles improves IPOPT convergence while
+        # the obstacle constraints still enforce collision-free tracking.
         "obstacle": np.array(
             [
                 [-1.25, 0.0, 0.0],
-                [-0.65, 0.0, 0.0],
-                [0.0, 0.0, 0.0],
-                [0.65, 0.0, 0.0],
+                [-0.80, 0.0, 0.0],
+                [-0.45, 0.42, 0.0],
+                [0.0, 0.55, 0.0],
+                [0.45, 0.42, 0.0],
+                [0.80, 0.0, 0.0],
                 [1.25, 0.0, 0.0],
             ]
         ),
@@ -87,7 +88,7 @@ def make_config(scenario_name: str) -> MPCConfig:
     if scenario_name == OBSTACLE_SCENARIO_NAME:
         return MPCConfig(
             dt=0.05,
-            horizon=50,
+            horizon=35,
             omega_max=np.pi,
             x_bound=(-1.6, 1.6),
             y_bound=(-1.2, 1.2),
@@ -95,6 +96,7 @@ def make_config(scenario_name: str) -> MPCConfig:
             r=np.diag([0.45, 0.04]),
             obstacles=OBSTACLE_SCENARIO_OBSTACLES,
             obstacle_safety_margin=OBSTACLE_SAFETY_MARGIN,
+            obstacle_slack_weight=1.0e4,
         )
     return MPCConfig(dt=0.05, horizon=50)
 
