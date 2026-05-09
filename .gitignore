@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.ipynb_checkpoints/
+*.log
+.DS_Store
+
+# Generated visualization outputs
+assets/images/*.gif
+!assets/images/.gitkeep
