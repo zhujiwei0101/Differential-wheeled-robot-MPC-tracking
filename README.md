@@ -4,7 +4,7 @@
 
 ### NMPC
 
-![figure 1](./test.gif)
+![figure 1](./assets/images/test.gif)
 
 ## Quick Start
 
@@ -49,15 +49,15 @@ The main dependencies are:
 ### 4. Run the demo
 
 ```bash
-python mpc.py
+python src/mpc.py
 ```
 
-The script runs an NMPC tracking example from the initial state `[-1, -1, 0]` to the target state `[0.5, 0, 0]`. It prints the robot state during execution and generates the trajectory animation `test.gif`.
+The script runs an NMPC tracking example from the initial state `[-1, -1, 0]` to the target state `[0.5, 0, 0]`. It prints the robot state during execution and generates the trajectory animation at `assets/images/test.gif`.
 
 ### 5. Optional: test the spline planner
 
 ```bash
-python cubic_spline_planner.py
+python src/cubic_spline_planner.py
 ```
 
 This runs the built-in 2D cubic spline example and displays the generated spline path, yaw, and curvature plots.
@@ -66,11 +66,15 @@ This runs the built-in 2D cubic spline example and displays the generated spline
 
 ```text
 .
-├── README.md                  # Project description, running instructions, and MPC derivation
-├── requirements.txt           # Python dependencies
-├── mpc.py                     # Nonlinear MPC trajectory tracking demo
-├── cubic_spline_planner.py    # 2D cubic spline path generation utility
-└── test.gif                   # NMPC visualization result
+├── README.md                   # Project description, running instructions, and MPC derivation
+├── requirements.txt            # Python dependencies
+├── src/                        # Source code
+│   ├── mpc.py                  # Nonlinear MPC trajectory tracking demo
+│   └── cubic_spline_planner.py # 2D cubic spline path generation utility
+└── assets/                     # Non-code assets
+    ├── README.md               # Asset directory notes
+    └── images/                 # Generated figures and GIFs
+        └── test.gif            # NMPC visualization result
 ```
 
 ## Preliminaries
