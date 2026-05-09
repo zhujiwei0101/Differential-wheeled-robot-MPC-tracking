@@ -1,0 +1,4 @@
+casadi>=3.6
+numpy>=1.21
+matplotlib>=3.5
+pillow>=9.0

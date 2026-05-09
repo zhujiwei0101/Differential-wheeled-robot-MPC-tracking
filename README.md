@@ -1,8 +1,80 @@
 # Differential-wheeled-robot-MPC-tracking
+
 ## Visualization
+
 ### NMPC
+
 ![figure 1](./test.gif)
+
+## Quick Start
+
+This repository contains a nonlinear MPC demo for differential-wheeled robot trajectory tracking.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/zhujiwei0101/Differential-wheeled-robot-MPC-tracking.git
+cd Differential-wheeled-robot-MPC-tracking
+```
+
+### 2. Create a Python environment
+
+Using conda is recommended:
+
+```bash
+conda create -n mpc_tracking python=3.10 -y
+conda activate mpc_tracking
+```
+
+You can also use a Python virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+The main dependencies are:
+
+- `casadi`: nonlinear optimization and IPOPT solver interface
+- `numpy`: numerical computation
+- `matplotlib`: trajectory plotting and animation
+- `pillow`: GIF writer used by Matplotlib animation
+
+### 4. Run the demo
+
+```bash
+python mpc.py
+```
+
+The script runs an NMPC tracking example from the initial state `[-1, -1, 0]` to the target state `[0.5, 0, 0]`. It prints the robot state during execution and generates the trajectory animation `test.gif`.
+
+### 5. Optional: test the spline planner
+
+```bash
+python cubic_spline_planner.py
+```
+
+This runs the built-in 2D cubic spline example and displays the generated spline path, yaw, and curvature plots.
+
+## Repository Structure
+
+```text
+.
+├── README.md                  # Project description, running instructions, and MPC derivation
+├── requirements.txt           # Python dependencies
+├── mpc.py                     # Nonlinear MPC trajectory tracking demo
+├── cubic_spline_planner.py    # 2D cubic spline path generation utility
+└── test.gif                   # NMPC visualization result
+```
+
 ## Preliminaries
+
 ### Kinematics Model
 The kinematics model of WMR is 
 ```math
@@ -37,7 +109,7 @@ The prediction of the robot motion is obtained as follows:
 ```math
 \boldsymbol{x}(k+j+1|k) = f_d(\boldsymbol{x}(k+j|k), \boldsymbol{u}(k+j|k))
 ```
-where $j\in[0, N-1]$ and $N$ is the prediction horizon, $\boldsymbol{x}(k+j+1|k)$ measn the $k+j+1$ prediction value predicted at the instant $k$.
+where $j\in[0, N-1]$ and $N$ is the prediction horizon, $\boldsymbol{x}(k+j+1|k)$ means the $k+j+1$ prediction value predicted at the instant $k$.
 The WMR is expected to track a reference trajectory $\boldsymbol{x_r}$ and find a control law such that
 ```math
 \boldsymbol{x}(k) - \boldsymbol{x}_r(k) = 0
