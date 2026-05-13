@@ -1,8 +1,11 @@
 import csv
+import math
 import os
 from typing import Sequence
 
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+from matplotlib.patches import Circle, Polygon
 import numpy as np
 
 
@@ -10,6 +13,54 @@ def ensure_parent_dir(path: str) -> None:
     output_dir = os.path.dirname(path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+
+
+def _transform_points(local_points: np.ndarray, state: np.ndarray) -> np.ndarray:
+    x, y, theta = state
+    rot = np.array(
+        [
+            [np.cos(theta), -np.sin(theta)],
+            [np.sin(theta), np.cos(theta)],
+        ]
+    )
+    return local_points @ rot.T + np.array([x, y])
+
+
+def robot_body_points(state: np.ndarray, length: float = 0.22, width: float = 0.14) -> np.ndarray:
+    local_body = np.array(
+        [
+            [length / 2.0, 0.0],
+            [length * 0.15, width / 2.0],
+            [-length / 2.0, width / 2.0],
+            [-length / 2.0, -width / 2.0],
+            [length * 0.15, -width / 2.0],
+        ]
+    )
+    return _transform_points(local_body, state)
+
+
+def robot_wheel_segments(state: np.ndarray, length: float = 0.22, width: float = 0.14) -> tuple[np.ndarray, np.ndarray]:
+    wheel_length = length * 0.55
+    left_wheel = np.array(
+        [
+            [-wheel_length / 2.0, width / 2.0 + 0.025],
+            [wheel_length / 2.0, width / 2.0 + 0.025],
+        ]
+    )
+    right_wheel = np.array(
+        [
+            [-wheel_length / 2.0, -width / 2.0 - 0.025],
+            [wheel_length / 2.0, -width / 2.0 - 0.025],
+        ]
+    )
+    return _transform_points(left_wheel, state), _transform_points(right_wheel, state)
+
+
+def _set_robot_artists(body_patch: Polygon, left_wheel, right_wheel, state: np.ndarray) -> None:
+    body_patch.set_xy(robot_body_points(state))
+    left_segment, right_segment = robot_wheel_segments(state)
+    left_wheel.set_data(left_segment[:, 0], left_segment[:, 1])
+    right_wheel.set_data(right_segment[:, 0], right_segment[:, 1])
 
 
 def plot_tracking_result(reference_path: np.ndarray, actual_path: np.ndarray) -> None:
@@ -23,6 +74,98 @@ def plot_tracking_result(reference_path: np.ndarray, actual_path: np.ndarray) ->
     plt.show()
 
 
+def _configure_axis(ax, reference_path: np.ndarray, actual_path: np.ndarray, title: str | None = None, obstacles=None) -> None:
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True)
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    if title:
+        ax.set_title(title)
+
+    margin = 0.25
+    all_xy = [reference_path[:, :2], actual_path[:, :2]]
+    if obstacles:
+        for obs_x, obs_y, obs_radius in obstacles:
+            all_xy.append(np.array([[obs_x - obs_radius, obs_y - obs_radius], [obs_x + obs_radius, obs_y + obs_radius]]))
+    all_xy = np.vstack(all_xy)
+    x_min, y_min = all_xy.min(axis=0)
+    x_max, y_max = all_xy.max(axis=0)
+    x_center = 0.5 * (x_min + x_max)
+    y_center = 0.5 * (y_min + y_max)
+    half_range = 0.5 * max(x_max - x_min, y_max - y_min) + margin
+    ax.set_xlim(x_center - half_range, x_center + half_range)
+    ax.set_ylim(y_center - half_range, y_center + half_range)
+
+
+def _draw_obstacles(ax, obstacles=None, safety_margin: float = 0.0) -> None:
+    if not obstacles:
+        return
+    for obs_x, obs_y, obs_radius in obstacles:
+        obstacle = Circle((obs_x, obs_y), obs_radius, fill=True, alpha=0.25, linewidth=1.5, label="obstacle")
+        ax.add_patch(obstacle)
+        if safety_margin > 0.0:
+            safe = Circle((obs_x, obs_y), obs_radius + safety_margin, fill=False, linestyle="--", linewidth=1.2, label="safety boundary")
+            ax.add_patch(safe)
+
+
+def _create_tracking_artists(ax, reference_path: np.ndarray, actual_path: np.ndarray, obstacles=None, safety_margin: float = 0.0):
+    ax.plot(reference_path[:, 0], reference_path[:, 1], "-r", label="reference")
+    ax.plot(reference_path[0, 0], reference_path[0, 1], "go", markersize=6, label="start")
+    ax.plot(reference_path[-1, 0], reference_path[-1, 1], "r*", markersize=9, label="goal")
+    _draw_obstacles(ax, obstacles, safety_margin=safety_margin)
+    actual_line, = ax.plot([], [], "-b", label="actual")
+    actual_points, = ax.plot([], [], "ob", markersize=2.5)
+    predicted_line, = ax.plot([], [], "--g", linewidth=1.2, label="MPC prediction")
+    heading_arrow = ax.quiver([], [], [], [], angles="xy", scale_units="xy", scale=1.0, color="k")
+    body_patch = Polygon(robot_body_points(actual_path[0]), closed=True, fill=False, linewidth=1.5)
+    left_wheel, = ax.plot([], [], "k", linewidth=1.8)
+    right_wheel, = ax.plot([], [], "k", linewidth=1.8)
+    ax.add_patch(body_patch)
+    info_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top", fontsize=8)
+    return {
+        "actual_line": actual_line,
+        "actual_points": actual_points,
+        "predicted_line": predicted_line,
+        "heading_arrow": heading_arrow,
+        "body_patch": body_patch,
+        "left_wheel": left_wheel,
+        "right_wheel": right_wheel,
+        "info_text": info_text,
+    }
+
+
+def _update_tracking_artists(artists: dict, result: dict, frame_idx: int):
+    actual_path = result["actual_path"]
+    predicted_paths = result.get("predicted_paths_for_gif")
+    controls = result.get("controls")
+    errors = result.get("errors")
+
+    frame_idx = min(frame_idx, len(actual_path) - 1)
+    artists["actual_line"].set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
+    artists["actual_points"].set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
+
+    if predicted_paths is not None and frame_idx < len(predicted_paths):
+        pred = predicted_paths[frame_idx]
+        artists["predicted_line"].set_data(pred[:, 0], pred[:, 1])
+    else:
+        artists["predicted_line"].set_data([], [])
+
+    state = actual_path[frame_idx]
+    artists["heading_arrow"].set_offsets([[state[0], state[1]]])
+    artists["heading_arrow"].set_UVC([0.12 * np.cos(state[2])], [0.12 * np.sin(state[2])])
+    _set_robot_artists(artists["body_patch"], artists["left_wheel"], artists["right_wheel"], state)
+
+    text_lines = [f"step: {frame_idx}"]
+    if errors is not None and frame_idx < len(errors):
+        text_lines.append(f"error: {errors[frame_idx]:.3f} m")
+    if controls is not None and frame_idx > 0 and frame_idx - 1 < len(controls):
+        v, omega = controls[frame_idx - 1]
+        text_lines.append(f"v: {v:.2f} m/s")
+        text_lines.append(f"w: {omega:.2f} rad/s")
+    artists["info_text"].set_text("\n".join(text_lines))
+    return tuple(artists.values())
+
+
 def save_tracking_gif(
     reference_path: np.ndarray,
     actual_path: np.ndarray,
@@ -31,70 +174,104 @@ def save_tracking_gif(
     controls: np.ndarray | None = None,
     errors: np.ndarray | None = None,
     robot_arrow_length: float = 0.12,
+    obstacles=None,
+    obstacle_safety_margin: float = 0.0,
 ) -> None:
-    """Save an enhanced NMPC tracking animation.
-
-    The animation shows:
-    - red line: reference trajectory
-    - blue line/points: executed trajectory
-    - green dashed line: current MPC predicted horizon
-    - black arrow: robot heading
-    - text: step, error, and current control
-    """
+    """Save an enhanced single-scenario NMPC tracking animation."""
     import matplotlib.animation as animation
 
     ensure_parent_dir(output_path)
-
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(reference_path[:, 0], reference_path[:, 1], "-r", label="reference")
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True)
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-
-    margin = 0.25
-    all_xy = np.vstack([reference_path[:, :2], actual_path[:, :2]])
-    ax.set_xlim(all_xy[:, 0].min() - margin, all_xy[:, 0].max() + margin)
-    ax.set_ylim(all_xy[:, 1].min() - margin, all_xy[:, 1].max() + margin)
-
-    actual_line, = ax.plot([], [], "-b", label="actual")
-    actual_points, = ax.plot([], [], "ob", markersize=3)
-    predicted_line, = ax.plot([], [], "--g", linewidth=1.5, label="MPC prediction")
-    heading_arrow = ax.quiver([], [], [], [], angles="xy", scale_units="xy", scale=1.0, color="k")
-    info_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top")
+    _configure_axis(ax, reference_path, actual_path, obstacles=obstacles)
+    result = {
+        "actual_path": actual_path,
+        "predicted_paths_for_gif": predicted_paths,
+        "controls": controls,
+        "errors": errors,
+    }
+    artists = _create_tracking_artists(ax, reference_path, actual_path, obstacles=obstacles, safety_margin=obstacle_safety_margin)
     ax.legend(loc="lower right")
 
     def update(frame_idx: int):
-        actual_line.set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
-        actual_points.set_data(actual_path[: frame_idx + 1, 0], actual_path[: frame_idx + 1, 1])
-
-        if predicted_paths is not None and frame_idx < len(predicted_paths):
-            pred = predicted_paths[frame_idx]
-            predicted_line.set_data(pred[:, 0], pred[:, 1])
-        else:
-            predicted_line.set_data([], [])
-
-        state = actual_path[frame_idx]
-        dx = robot_arrow_length * np.cos(state[2])
-        dy = robot_arrow_length * np.sin(state[2])
-        heading_arrow.set_offsets([[state[0], state[1]]])
-        heading_arrow.set_UVC([dx], [dy])
-
-        text_lines = [f"step: {frame_idx}"]
-        if errors is not None and frame_idx < len(errors):
-            text_lines.append(f"position error: {errors[frame_idx]:.4f} m")
-        if controls is not None and frame_idx > 0 and frame_idx - 1 < len(controls):
-            v, omega = controls[frame_idx - 1]
-            text_lines.append(f"v: {v:.3f} m/s")
-            text_lines.append(f"omega: {omega:.3f} rad/s")
-        info_text.set_text("\n".join(text_lines))
-
-        return actual_line, actual_points, predicted_line, heading_arrow, info_text
+        return _update_tracking_artists(artists, result, frame_idx)
 
     ani = animation.FuncAnimation(
         fig,
         update,
         frames=len(actual_path),
+        interval=40,
+        blit=False,
+        repeat_delay=500,
+    )
+    ani.save(output_path, writer="pillow")
+    plt.close(fig)
+
+
+def save_multi_scenario_gif(scenario_results: Sequence[dict], output_path: str) -> None:
+    """Save one GIF with three standard panels and one wide obstacle panel."""
+    import matplotlib.animation as animation
+
+    ensure_parent_dir(output_path)
+    if not scenario_results:
+        raise ValueError("scenario_results must not be empty")
+
+    top_results = [result for result in scenario_results if result.get("layout") != "wide"]
+    wide_results = [result for result in scenario_results if result.get("layout") == "wide"]
+
+    n_top = min(3, len(top_results))
+    fig = plt.figure(figsize=(15.6, 8.8))
+    gs = GridSpec(2, 3, figure=fig, height_ratios=[1.0, 1.15])
+    axes = []
+    ordered_results = []
+
+    for idx in range(3):
+        ax = fig.add_subplot(gs[0, idx])
+        if idx < n_top:
+            result = top_results[idx]
+            _configure_axis(ax, result["reference_path"], result["actual_path"], title=result["name"], obstacles=result.get("obstacles"))
+            artists = _create_tracking_artists(
+                ax,
+                result["reference_path"],
+                result["actual_path"],
+                obstacles=result.get("obstacles"),
+                safety_margin=result.get("obstacle_safety_margin", 0.0),
+            )
+            axes.append((ax, artists))
+            ordered_results.append(result)
+        else:
+            ax.axis("off")
+
+    if wide_results:
+        result = wide_results[0]
+        ax = fig.add_subplot(gs[1, :])
+        _configure_axis(ax, result["reference_path"], result["actual_path"], title=result["name"], obstacles=result.get("obstacles"))
+        artists = _create_tracking_artists(
+            ax,
+            result["reference_path"],
+            result["actual_path"],
+            obstacles=result.get("obstacles"),
+            safety_margin=result.get("obstacle_safety_margin", 0.0),
+        )
+        axes.append((ax, artists))
+        ordered_results.append(result)
+
+    if axes:
+        axes[0][0].legend(loc="lower right", fontsize=8)
+    fig.suptitle("NMPC Multi-scenario Tracking Demo", fontsize=14)
+    fig.tight_layout()
+
+    max_frames = max(len(result["actual_path"]) for result in ordered_results)
+
+    def update(global_frame_idx: int):
+        updated = []
+        for result, (_, artists) in zip(ordered_results, axes):
+            updated.extend(_update_tracking_artists(artists, result, global_frame_idx))
+        return updated
+
+    ani = animation.FuncAnimation(
+        fig,
+        update,
+        frames=max_frames,
         interval=40,
         blit=False,
         repeat_delay=500,

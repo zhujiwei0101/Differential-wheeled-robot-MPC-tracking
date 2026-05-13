@@ -2,15 +2,16 @@
 
 ## Visualization
 
-### NMPC
+### Multi-scenario NMPC demo
 
-![figure 1](./assets/images/test.gif)
+![multi scenario demo](./assets/images/multi_scenario_demo.gif)
 
 > Note: new generated figures, animations, and run logs are written to `assets/` by default.
 
 The enhanced demo can generate:
 
-- `assets/images/test.gif`: NMPC tracking animation with reference path, executed path, robot heading, current MPC prediction horizon, and step information.
+- `assets/images/multi_scenario_demo.gif`: one combined GIF containing multiple scenarios.
+- `assets/images/test.gif`: single-scenario NMPC tracking animation with reference path, executed path, robot body, current MPC prediction horizon, and step information.
 - `assets/images/control_profile.png`: linear/angular velocity profile.
 - `assets/images/tracking_error.png`: position tracking error curve.
 - `assets/logs/demo_tracking.csv`: CSV log containing state, control, and error at each step.
@@ -34,16 +35,30 @@ This project supports `uv sync` through `pyproject.toml`:
 uv sync
 ```
 
-Then run the enhanced demo with:
+Then run the multi-scenario demo with:
 
 ```bash
 uv run python src/demo_tracking.py
 ```
 
-You can customize output paths and optionally show a static plot:
+By default, this generates one GIF containing the `curve`, `s_curve`, and `circle` scenarios:
+
+```text
+assets/images/multi_scenario_demo.gif
+```
+
+You can customize the scenario list:
+
+```bash
+uv run python src/demo_tracking.py --scenarios line curve s_curve circle zigzag
+```
+
+You can also run only one scenario:
 
 ```bash
 uv run python src/demo_tracking.py \
+  --single-scenario \
+  --scenario s_curve \
   --output assets/images/test.gif \
   --control-plot assets/images/control_profile.png \
   --error-plot assets/images/tracking_error.png \
@@ -81,8 +96,6 @@ For backward compatibility, this also works:
 uv run python src/mpc.py
 ```
 
-The script runs an NMPC tracking example from the initial state `[-1, -1, 0]` to the target state `[0.5, 0, 0]`.
-
 ### 4. Optional: test the spline planner
 
 ```bash
@@ -119,6 +132,8 @@ This runs the built-in 2D cubic spline example and displays the generated spline
 The optimized controller builds the CasADi/IPOPT solver once when `MPCController` is initialized. During the control loop, each step only updates the current state, reference window, and warm-start guesses. This avoids rebuilding the optimization graph at every MPC iteration.
 
 The enhanced animation shows the current MPC prediction horizon at every frame, which helps illustrate the receding-horizon control process: the controller predicts multiple future steps but only executes the first control action.
+
+The robot is drawn as a simple differential-drive body with a heading arrow and wheel segments, making the pose evolution easier to understand.
 
 The control cost matrix is also changed to a diagonal form:
 

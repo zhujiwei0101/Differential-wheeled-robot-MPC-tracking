@@ -17,6 +17,10 @@ class MPCConfig:
     y_bound: Tuple[float, float] = (-2.0, 2.0)
     q: np.ndarray = field(default_factory=lambda: np.diag([20.0, 20.0, 0.1]))
     r: np.ndarray = field(default_factory=lambda: np.diag([0.5, 0.05]))
+    obstacles: Tuple[Tuple[float, float, float], ...] = ()
+    obstacle_safety_margin: float = 0.12
+    obstacle_slack_weight: float = 1.0e4
+    obstacle_repulsion_weight: float = 0.0
 
 
 class MPCController:
@@ -29,8 +33,14 @@ class MPCController:
     def __init__(self, config: MPCConfig | None = None):
         self.config = config or MPCConfig()
         self._build_solver()
-        self._state_guess = np.zeros((self.config.horizon + 1, 3))
-        self._control_guess = np.zeros((self.config.horizon, 2))
+        self._state_warm = np.zeros((self.config.horizon + 1, 3))
+        self._control_warm = np.zeros((self.config.horizon, 2))
+        self._obstacle_slack_warm = None
+        if self.config.obstacles:
+            self._obstacle_slack_warm = np.full(
+                (self.config.horizon, len(self.config.obstacles)),
+                (self.config.obstacle_safety_margin + 0.2) ** 2,
+            )
 
     @staticmethod
     def dynamics_np(state: np.ndarray, control: np.ndarray) -> np.ndarray:
@@ -47,6 +57,9 @@ class MPCController:
 
         controls = opti.variable(cfg.horizon, 2)
         states = opti.variable(cfg.horizon + 1, 3)
+        obstacle_slacks = None
+        if cfg.obstacles:
+            obstacle_slacks = opti.variable(cfg.horizon, len(cfg.obstacles))
 
         v = controls[:, 0]
         omega = controls[:, 1]
@@ -74,26 +87,64 @@ class MPCController:
             objective += ca.mtimes([state_error, cfg.q, state_error.T])
             objective += ca.mtimes([controls[i, :], cfg.r, controls[i, :].T])
 
-        opti.minimize(objective)
         opti.subject_to(opti.bounded(cfg.x_bound[0], x, cfg.x_bound[1]))
         opti.subject_to(opti.bounded(cfg.y_bound[0], y, cfg.y_bound[1]))
         opti.subject_to(opti.bounded(-cfg.v_max, v, cfg.v_max))
         opti.subject_to(opti.bounded(-cfg.omega_max, omega, cfg.omega_max))
 
+        if cfg.obstacles and obstacle_slacks is not None:
+            # CasADi treats matrix inequalities specially. Use element-wise scalar
+            # constraints instead of `obstacle_slacks >= 0.0`.
+            for slack_idx in range(cfg.horizon):
+                for obs_idx in range(len(cfg.obstacles)):
+                    opti.subject_to(obstacle_slacks[slack_idx, obs_idx] >= 0.0)
+
+            for obs_idx, (obs_x, obs_y, obs_radius) in enumerate(cfg.obstacles):
+                safe_radius = obs_radius + cfg.obstacle_safety_margin
+                for i in range(1, cfg.horizon + 1):
+                    distance_sq = (states[i, 0] - obs_x) ** 2 + (states[i, 1] - obs_y) ** 2
+                    slack = obstacle_slacks[i - 1, obs_idx]
+                    # Soft safety constraint: slack keeps the nonlinear program feasible,
+                    # while the large penalty still strongly discourages safety violation.
+                    opti.subject_to(distance_sq + slack >= safe_radius**2)
+                    objective += cfg.obstacle_slack_weight * slack**2
+                    if cfg.obstacle_repulsion_weight > 0.0:
+                        objective += cfg.obstacle_repulsion_weight / (distance_sq + 1.0e-3)
+
+        opti.minimize(objective)
+
         solver_options = {
-            "ipopt.max_iter": 200,
+            "ipopt.max_iter": 800,
             "ipopt.print_level": 0,
             "print_time": 0,
-            "ipopt.acceptable_tol": 1e-8,
-            "ipopt.acceptable_obj_change_tol": 1e-6,
+            "ipopt.acceptable_tol": 1e-6,
+            "ipopt.acceptable_obj_change_tol": 1e-5,
+            "ipopt.mu_strategy": "adaptive",
         }
         opti.solver("ipopt", solver_options)
 
         self.opti = opti
         self.controls = controls
         self.states = states
+        self.obstacle_slacks = obstacle_slacks
         self.x0 = x0
         self.x_ref = x_ref
+
+    def _make_state_initial(self, reference_window: np.ndarray) -> np.ndarray:
+        """Build initial state warm-start, perturbed away from obstacles when needed."""
+        initial = reference_window.copy()
+        if not self.config.obstacles:
+            return initial
+        for obs_x, obs_y, obs_radius in self.config.obstacles:
+            safe_radius = obs_radius + self.config.obstacle_safety_margin + 0.02
+            safe_radius_sq = safe_radius**2
+            for i in range(initial.shape[0]):
+                dx = initial[i, 0] - obs_x
+                dy = initial[i, 1] - obs_y
+                if dx**2 + dy**2 < safe_radius_sq:
+                    needed_dy = np.sqrt(max(0.0, safe_radius_sq - dx**2))
+                    initial[i, 1] = obs_y + needed_dy
+        return initial
 
     def solve_step(self, current_state: np.ndarray, reference_window: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Solve one MPC step.
@@ -113,8 +164,11 @@ class MPCController:
 
         self.opti.set_value(self.x0, current_state)
         self.opti.set_value(self.x_ref, reference_window[: cfg.horizon + 1])
-        self.opti.set_initial(self.controls, self._control_guess)
-        self.opti.set_initial(self.states, self._state_guess)
+        self.opti.set_initial(self.controls, self._control_warm)
+        state_initial = self._make_state_initial(reference_window[: cfg.horizon + 1])
+        self.opti.set_initial(self.states, state_initial)
+        if self.obstacle_slacks is not None and self._obstacle_slack_warm is not None:
+            self.opti.set_initial(self.obstacle_slacks, self._obstacle_slack_warm)
 
         solution = self.opti.solve()
         optimized_controls = solution.value(self.controls)
@@ -123,7 +177,10 @@ class MPCController:
         first_control = optimized_controls[0]
         next_state = self.step_dynamics(current_state, first_control)
 
-        self._control_guess = np.vstack([optimized_controls[1:], optimized_controls[-1:]])
-        self._state_guess = np.vstack([predicted_states[1:], predicted_states[-1:]])
+        self._control_warm = np.vstack([optimized_controls[1:], optimized_controls[-1:]])
+        self._state_warm = np.vstack([predicted_states[1:], predicted_states[-1:]])
+        if self.obstacle_slacks is not None and self._obstacle_slack_warm is not None:
+            optimized_slacks = solution.value(self.obstacle_slacks)
+            self._obstacle_slack_warm = np.vstack([optimized_slacks[1:], optimized_slacks[-1:]])
 
         return first_control, next_state, predicted_states
