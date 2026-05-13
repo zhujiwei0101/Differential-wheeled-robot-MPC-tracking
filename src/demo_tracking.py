@@ -64,16 +64,11 @@ def get_scenario_waypoints(name: str) -> np.ndarray:
                 [1.1, -0.2, 0.0],
             ]
         ),
-        # A guided reference around obstacles improves IPOPT convergence while
-        # the obstacle constraints still enforce collision-free tracking.
+        # Straight-line reference that passes through obstacles.
+        # Obstacle constraints in the MPC controller push the actual path around.
         "obstacle": np.array(
             [
                 [-1.25, 0.0, 0.0],
-                [-0.80, 0.0, 0.0],
-                [-0.45, 0.42, 0.0],
-                [0.0, 0.55, 0.0],
-                [0.45, 0.42, 0.0],
-                [0.80, 0.0, 0.0],
                 [1.25, 0.0, 0.0],
             ]
         ),

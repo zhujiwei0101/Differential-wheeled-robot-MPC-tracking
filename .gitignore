@@ -6,6 +6,7 @@ __pycache__/
 *.log
 .DS_Store
 token.md
+CLAUDE.md
 
 # Generated visualization outputs
 # assets/images/*.gif

@@ -33,11 +33,11 @@ class MPCController:
     def __init__(self, config: MPCConfig | None = None):
         self.config = config or MPCConfig()
         self._build_solver()
-        self._state_guess = np.zeros((self.config.horizon + 1, 3))
-        self._control_guess = np.zeros((self.config.horizon, 2))
-        self._obstacle_slack_guess = None
+        self._state_warm = np.zeros((self.config.horizon + 1, 3))
+        self._control_warm = np.zeros((self.config.horizon, 2))
+        self._obstacle_slack_warm = None
         if self.config.obstacles:
-            self._obstacle_slack_guess = np.full(
+            self._obstacle_slack_warm = np.full(
                 (self.config.horizon, len(self.config.obstacles)),
                 (self.config.obstacle_safety_margin + 0.2) ** 2,
             )
@@ -130,6 +130,22 @@ class MPCController:
         self.x0 = x0
         self.x_ref = x_ref
 
+    def _make_state_initial(self, reference_window: np.ndarray) -> np.ndarray:
+        """Build initial state warm-start, perturbed away from obstacles when needed."""
+        initial = reference_window.copy()
+        if not self.config.obstacles:
+            return initial
+        for obs_x, obs_y, obs_radius in self.config.obstacles:
+            safe_radius = obs_radius + self.config.obstacle_safety_margin + 0.02
+            safe_radius_sq = safe_radius**2
+            for i in range(initial.shape[0]):
+                dx = initial[i, 0] - obs_x
+                dy = initial[i, 1] - obs_y
+                if dx**2 + dy**2 < safe_radius_sq:
+                    needed_dy = np.sqrt(max(0.0, safe_radius_sq - dx**2))
+                    initial[i, 1] = obs_y + needed_dy
+        return initial
+
     def solve_step(self, current_state: np.ndarray, reference_window: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Solve one MPC step.
 
@@ -148,12 +164,11 @@ class MPCController:
 
         self.opti.set_value(self.x0, current_state)
         self.opti.set_value(self.x_ref, reference_window[: cfg.horizon + 1])
-        self.opti.set_initial(self.controls, self._control_guess)
-        # A reference-window state warm start is much more reliable for obstacle
-        # scenes than an all-zero state guess.
-        self.opti.set_initial(self.states, reference_window[: cfg.horizon + 1])
-        if self.obstacle_slacks is not None and self._obstacle_slack_guess is not None:
-            self.opti.set_initial(self.obstacle_slacks, self._obstacle_slack_guess)
+        self.opti.set_initial(self.controls, self._control_warm)
+        state_initial = self._make_state_initial(reference_window[: cfg.horizon + 1])
+        self.opti.set_initial(self.states, state_initial)
+        if self.obstacle_slacks is not None and self._obstacle_slack_warm is not None:
+            self.opti.set_initial(self.obstacle_slacks, self._obstacle_slack_warm)
 
         solution = self.opti.solve()
         optimized_controls = solution.value(self.controls)
@@ -162,10 +177,10 @@ class MPCController:
         first_control = optimized_controls[0]
         next_state = self.step_dynamics(current_state, first_control)
 
-        self._control_guess = np.vstack([optimized_controls[1:], optimized_controls[-1:]])
-        self._state_guess = np.vstack([predicted_states[1:], predicted_states[-1:]])
-        if self.obstacle_slacks is not None and self._obstacle_slack_guess is not None:
+        self._control_warm = np.vstack([optimized_controls[1:], optimized_controls[-1:]])
+        self._state_warm = np.vstack([predicted_states[1:], predicted_states[-1:]])
+        if self.obstacle_slacks is not None and self._obstacle_slack_warm is not None:
             optimized_slacks = solution.value(self.obstacle_slacks)
-            self._obstacle_slack_guess = np.vstack([optimized_slacks[1:], optimized_slacks[-1:]])
+            self._obstacle_slack_warm = np.vstack([optimized_slacks[1:], optimized_slacks[-1:]])
 
         return first_control, next_state, predicted_states
